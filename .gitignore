@@ -1,0 +1,26 @@
+# Go
+auto-deploy-platform
+*.exe
+workspace/
+
+# SQLite database
+deploy.db
+deploy.db-shm
+deploy.db-wal
+
+# Config with secrets
+config.yaml
+
+# Frontend
+web/node_modules/
+web/dist/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db

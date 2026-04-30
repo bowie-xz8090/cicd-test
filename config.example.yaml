@@ -1,0 +1,42 @@
+server:
+  port: 8080
+  workspace: "./workspace"
+
+gitea:
+  url: "http://gitea.example.com"
+  token: "your-access-token"
+
+environments:
+  dev:
+    label: "开发环境"
+    server:
+      host: "192.168.1.10"
+      port: 22
+      user: "deploy"
+      password: "your-ssh-password"
+      deploy_path: "/opt/apps"
+  sit:
+    label: "集成测试环境"
+    server:
+      host: "192.168.1.20"
+      port: 22
+      user: "deploy"
+      password: "your-ssh-password"
+      deploy_path: "/opt/apps"
+  prod:
+    label: "生产环境"
+    server:
+      host: "192.168.1.30"
+      port: 22
+      user: "deploy"
+      password: "your-ssh-password"
+      deploy_path: "/opt/apps"
+
+projects:
+  project-name:
+    build_cmd: "npm run build"
+    build_output: "./dist"
+    deploy_script: |
+      cd /opt/apps/project-name
+      tar -xzf deploy.tar.gz
+      systemctl restart project-name
