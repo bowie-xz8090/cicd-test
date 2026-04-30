@@ -303,7 +303,156 @@ sudo journalctl -u auto-deploy -f
 sudo systemctl restart auto-deploy
 ```
 
+## Docker 部署（推荐）
+
+使用 Docker 可以一键构建和部署，**目标服务器不需要安装 Go、Node.js 等编译环境，只需要有 Docker**。
+
+### 部署方式对比
+
+| 方式 | 需要传什么到服务器 | 服务器要求 | 适用场景 |
+|------|-------------------|-----------|----------|
+| **本地构建 + 传镜像** | 镜像包 + config.yaml + docker-compose.yml | 仅 Docker | 服务器无法联网或不想暴露源码 |
+| **服务器上构建** | 整个项目源码 | Docker | 服务器能联网，图省事 |
+| **镜像仓库** | config.yaml + docker-compose.yml | Docker + 能访问仓库 | 团队协作、CI/CD 流水线 |
+
+---
+
+### 方式一：本地构建镜像 + 离线部署（推荐）
+
+**不需要把源码传到服务器**，只需要传 3 个文件。
+
+#### 步骤 1：在开发机上构建并导出镜像
+
+```bash
+# 构建镜像（自动编译前端和后端，约 2-5 分钟）
+docker build -t auto-deploy-platform .
+
+# 导出为压缩包（约 50-80MB）
+docker save auto-deploy-platform | gzip > auto-deploy-platform.tar.gz
+```
+
+#### 步骤 2：准备配置文件
+
+```bash
+cp config.example.yaml config.yaml
+vim config.yaml    # 填入实际的 Gitea 地址、服务器密码等
+```
+
+#### 步骤 3：传输到目标服务器
+
+只需要传这 3 个文件：
+
+```
+scp auto-deploy-platform.tar.gz root@your-server:/opt/deploy/
+scp config.yaml root@your-server:/opt/deploy/
+scp docker-compose.yml root@your-server:/opt/deploy/
+```
+
+目标服务器上的文件结构：
+
+```
+/opt/deploy/
+├── auto-deploy-platform.tar.gz   # 镜像包
+├── config.yaml                    # 配置文件（含服务器密码，chmod 600）
+└── docker-compose.yml             # Docker 启动配置
+```
+
+#### 步骤 4：在服务器上启动
+
+```bash
+cd /opt/deploy
+
+# 导入镜像
+docker load < auto-deploy-platform.tar.gz
+
+# 启动
+docker compose up -d
+
+# 查看日志确认启动成功
+docker compose logs -f
+```
+
+打开浏览器访问 `http://服务器IP:8080` 即可使用。
+
+---
+
+### 方式二：在服务器上构建（需要上传源码）
+
+如果服务器能联网，可以直接在服务器上构建，但需要把整个项目源码传上去。
+
+```bash
+# 1. 将项目源码传到服务器
+scp -r ./ root@your-server:/opt/deploy/
+
+# 2. 在服务器上操作
+ssh root@your-server
+cd /opt/deploy
+
+# 3. 准备配置文件
+cp config.example.yaml config.yaml
+vim config.yaml
+
+# 4. 一键构建并启动
+docker compose up -d --build
+
+# 5. 构建完成后可以删除源码（镜像已包含所有内容）
+# rm -rf cmd/ internal/ web/src/ go.mod go.sum tools.go
+```
+
+---
+
+### 方式三：docker run 手动启动
+
+不用 docker-compose，直接用 docker 命令：
+
+```bash
+# 运行容器
+docker run -d \
+  --name auto-deploy-platform \
+  -p 8080:8080 \
+  -v /opt/deploy/config.yaml:/app/config.yaml:ro \
+  -v deploy-data:/app/data \
+  -v deploy-workspace:/app/workspace \
+  -e GIN_MODE=release \
+  --restart unless-stopped \
+  auto-deploy-platform
+```
+
+---
+
+### Docker 数据持久化
+
+| 挂载路径 | 说明 | 是否必须 |
+|----------|------|----------|
+| `/app/config.yaml` | 配置文件（Gitea 地址、服务器密码等） | **必须** |
+| `/app/data/` | SQLite 数据库（部署历史记录） | 建议（否则容器重启后记录丢失） |
+| `/app/workspace/` | 代码克隆和构建的工作目录 | 建议（避免每次重新克隆） |
+
+### 常用 Docker 管理命令
+
+```bash
+# 查看运行状态
+docker compose ps
+
+# 查看实时日志
+docker compose logs -f
+
+# 重启服务
+docker compose restart
+
+# 停止并删除容器（数据卷保留）
+docker compose down
+
+# 停止并删除容器和数据卷（清除所有数据）
+docker compose down -v
+
+# 更新镜像（重新构建后）
+docker compose down
+docker compose up -d
+```
+
 ## 使用方式
+
 
 启动后打开浏览器访问 `http://服务器IP:8080`。
 

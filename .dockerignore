@@ -1,0 +1,27 @@
+# Git
+.git
+.gitignore
+
+# IDE
+.vscode
+.idea
+.kiro
+
+# Build artifacts
+auto-deploy-platform
+deploy.db
+deploy.db-shm
+deploy.db-wal
+workspace/
+
+# Frontend build cache
+web/node_modules
+web/dist
+
+# Config with secrets
+config.yaml
+
+# Docker
+Dockerfile
+docker-compose.yml
+.dockerignore

@@ -1,0 +1,22 @@
+services:
+  auto-deploy:
+    build: .
+    image: auto-deploy-platform:latest
+    container_name: auto-deploy-platform
+    ports:
+      - "8080:8080"
+    volumes:
+      # 配置文件挂载（必须提前创建）
+      - ./config.yaml:/app/config.yaml:ro
+      # 数据持久化（SQLite 数据库）
+      - deploy-data:/app/data
+      # 代码工作目录持久化（避免每次重新克隆）
+      - deploy-workspace:/app/workspace
+    environment:
+      - GIN_MODE=release
+      - TZ=Asia/Shanghai
+    restart: unless-stopped
+
+volumes:
+  deploy-data:
+  deploy-workspace:
