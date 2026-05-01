@@ -57,9 +57,15 @@ cd ..
 
 ### 3. 编译后端
 
+linux、macOS
 ```bash
 CGO_ENABLED=1 go build -o auto-deploy-platform ./cmd/
 ```
+
+windows
+```bash
+go run ./cmd/main.go
+```bash
 
 > `CGO_ENABLED=1` 是必须的，因为 SQLite 驱动依赖 CGO。
 
