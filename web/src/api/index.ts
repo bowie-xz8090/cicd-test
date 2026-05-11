@@ -18,6 +18,9 @@ export interface Branch {
 export interface Environment {
   key: string
   label: string
+  disabled: boolean
+  user_url: string
+  admin_url: string
 }
 
 export interface DeployRequest {
@@ -151,4 +154,10 @@ export async function fetchRecords(
   return api.get('/api/deploy/records', {
     params: filter,
   }) as unknown as RecordListResponse
+}
+
+export async function cancelDeploy(taskId: string): Promise<{ message: string }> {
+  return api.post(
+    `/api/deploy/${encodeURIComponent(taskId)}/cancel`,
+  ) as unknown as { message: string }
 }

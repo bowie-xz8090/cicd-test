@@ -453,6 +453,9 @@ docker compose down -v
 # 更新镜像（重新构建后）
 docker compose down
 docker compose up -d
+
+# 重建并重启服务
+docker compose up -d --build 
 ```
 
 ## 使用方式
@@ -593,3 +596,66 @@ auto-deploy-platform/
 | GET | `/api/deploy/:id/status` | 获取任务状态 |
 | GET | `/api/deploy/:id/logs` | 获取任务日志 |
 | GET | `/api/deploy/records` | 获取部署历史（支持筛选和分页） |
+| PUT | `/api/config` | 修改配置（需要 admin_token 鉴权） |
+| POST | `/api/config/reload` | 从磁盘重新加载配置（需要 admin_token 鉴权） |
+| POST | `/api/webhook/gitea` | Gitea Webhook 回调（push 事件自动触发部署） |
+
+### 配置动态修改
+
+平台支持在运行时动态修改配置，**无需重启容器或服务**，修改后立即生效。
+
+所有配置管理接口需要 `admin_token` 鉴权，在 `config.yaml` 中设置：
+
+```yaml
+admin_token: "your-secure-random-string"
+```
+
+#### 修改配置（PUT /api/config）
+
+提交完整配置 JSON，验证通过后同时更新内存和磁盘文件，立即生效。
+
+```bash
+curl -X PUT http://localhost:8080/api/config \
+  -H "Authorization: Bearer your-secure-random-string" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "server": {"port": 8080, "workspace": "/app/workspace"},
+    "gitea": {"url": "http://gitea.example.com", "token": "new-token"},
+    "environments": {
+      "dev": {
+        "label": "开发环境",
+        "server": {"host": "192.168.1.10", "port": 22, "user": "deploy", "password": "new-pass", "deploy_path": "/opt/apps"}
+      }
+    },
+    "projects": {
+      "my-project": {
+        "build_cmd": "npm run build",
+        "build_output": "./dist",
+        "deploy_script": "systemctl restart my-project"
+      }
+    }
+  }'
+```
+
+**注意事项：**
+- 必须提交完整配置（全量替换，不是局部更新）
+- `gitea.url`、`gitea.token` 不能为空，`environments` 至少要有一个
+- `server.port` 修改需要重启服务才能生效，其他配置立即生效
+- 新的部署任务会自动使用最新配置（环境、项目、服务器信息等）
+
+#### 从磁盘重载配置（POST /api/config/reload）
+
+如果直接编辑了 `config.yaml` 文件（例如通过 `docker exec` 或挂载卷修改），调用此接口让服务读取最新配置：
+
+```bash
+curl -X POST http://localhost:8080/api/config/reload \
+  -H "Authorization: Bearer your-secure-random-string"
+```
+
+也可以通过 query 参数传递 token：
+
+```bash
+curl -X POST "http://localhost:8080/api/config/reload?token=your-secure-random-string"
+```
+
+> **安全说明**：未设置 `admin_token` 时接口返回 403 不可用；token 错误返回 401。`admin_token` 不会出现在任何 API 响应中。

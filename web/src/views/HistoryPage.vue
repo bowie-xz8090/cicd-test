@@ -18,13 +18,20 @@
         <label for="filter-env">环境</label>
         <select id="filter-env" v-model="filter.environment">
           <option value="">全部</option>
-          <option value="dev">开发环境</option>
-          <option value="sit">集成测试环境</option>
-          <option value="prod">生产环境</option>
+          <option
+            v-for="env in environments"
+            :key="env.key"
+            :value="env.key"
+          >
+            {{ env.label }}
+          </option>
         </select>
       </div>
       <button class="search-btn" @click="handleSearch" :disabled="loading">
         查询
+      </button>
+      <button class="refresh-btn" @click="handleRefresh" :disabled="loading">
+        刷新
       </button>
     </div>
 
@@ -63,6 +70,14 @@
                 <span :class="['status-badge', statusClass(record.status)]">
                   {{ statusLabel(record.status) }}
                 </span>
+                <button
+                  v-if="isRunningStatus(record.status)"
+                  class="cancel-btn"
+                  @click.stop="handleCancel(record.id)"
+                  :disabled="loading"
+                >
+                  中断
+                </button>
               </td>
               <td>{{ formatTime(record.created_at) }}</td>
             </tr>
@@ -102,12 +117,14 @@
 
 <script setup lang="ts">
 import { ref, reactive, computed, onMounted } from 'vue'
-import { fetchRecords, type DeployRecord } from '../api/index'
+import { fetchRecords, fetchEnvironments, cancelDeploy, type DeployRecord, type Environment } from '../api/index'
 import LogViewer from '../components/LogViewer.vue'
 
 // --- Reactive state ---
 const records = ref<DeployRecord[]>([])
 const total = ref(0)
+const environments = ref<Environment[]>([])
+const environmentLabels = ref<Record<string, string>>({})
 const filter = reactive({
   project: '',
   environment: '',
@@ -133,12 +150,6 @@ const STATUS_MAP: Record<string, { label: string; cssClass: string }> = {
   failed: { label: '失败', cssClass: 'status-failed' },
 }
 
-const ENVIRONMENT_LABELS: Record<string, string> = {
-  dev: '开发环境',
-  sit: '集成测试环境',
-  prod: '生产环境',
-}
-
 function statusLabel(status: string): string {
   return STATUS_MAP[status]?.label ?? status
 }
@@ -147,8 +158,12 @@ function statusClass(status: string): string {
   return STATUS_MAP[status]?.cssClass ?? 'status-pending'
 }
 
+function isRunningStatus(status: string): boolean {
+  return status === 'cloning' || status === 'building' || status === 'deploying'
+}
+
 function environmentLabel(env: string): string {
-  return ENVIRONMENT_LABELS[env] ?? env
+  return environmentLabels.value[env] ?? env
 }
 
 function formatTime(timeStr: string): string {
@@ -193,6 +208,11 @@ function handleSearch() {
   loadRecords()
 }
 
+function handleRefresh() {
+  selectedRecordId.value = null
+  loadRecords()
+}
+
 function handleRowClick(recordId: string) {
   if (selectedRecordId.value === recordId) {
     selectedRecordId.value = null
@@ -207,8 +227,32 @@ function handlePageChange(page: number) {
   loadRecords()
 }
 
+async function handleCancel(taskId: string) {
+  if (!confirm('确定要中断该部署任务吗？')) return
+  try {
+    await cancelDeploy(taskId)
+    loadRecords()
+  } catch (err: unknown) {
+    const message = err instanceof Error ? err.message : '未知错误'
+    errorMessage.value = `中断失败：${message}`
+  }
+}
+
 // --- Lifecycle ---
-onMounted(() => {
+onMounted(async () => {
+  // Load environment labels from API
+  try {
+    const envs = await fetchEnvironments()
+    environments.value = envs
+    const labels: Record<string, string> = {}
+    for (const env of envs) {
+      labels[env.key] = env.label
+    }
+    environmentLabels.value = labels
+  } catch {
+    // Fallback: use key as label
+  }
+
   loadRecords()
 })
 </script>
@@ -283,6 +327,28 @@ h1 {
 
 .search-btn:disabled {
   background: #93c5fd;
+  cursor: not-allowed;
+}
+
+.refresh-btn {
+  padding: 8px 20px;
+  background: #fff;
+  color: #2563eb;
+  border: 1px solid #2563eb;
+  border-radius: 6px;
+  font-size: 0.9rem;
+  font-weight: 600;
+  cursor: pointer;
+  transition: background 0.15s, color 0.15s;
+}
+
+.refresh-btn:hover:not(:disabled) {
+  background: #eff6ff;
+}
+
+.refresh-btn:disabled {
+  color: #93c5fd;
+  border-color: #93c5fd;
   cursor: not-allowed;
 }
 
@@ -399,6 +465,29 @@ h1 {
 .status-failed {
   background: #fee2e2;
   color: #b91c1c;
+}
+
+.cancel-btn {
+  margin-left: 8px;
+  padding: 2px 10px;
+  background: #fff;
+  color: #dc2626;
+  border: 1px solid #dc2626;
+  border-radius: 10px;
+  font-size: 0.75rem;
+  font-weight: 600;
+  cursor: pointer;
+  transition: background 0.15s, color 0.15s;
+}
+
+.cancel-btn:hover:not(:disabled) {
+  background: #fef2f2;
+}
+
+.cancel-btn:disabled {
+  color: #fca5a5;
+  border-color: #fca5a5;
+  cursor: not-allowed;
 }
 
 /* Pagination */

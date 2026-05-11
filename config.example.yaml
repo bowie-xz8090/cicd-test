@@ -2,6 +2,12 @@ server:
   port: 8080
   workspace: "./workspace"
 
+# 配置管理接口鉴权令牌（必须设置才能使用 PUT /api/config 和 POST /api/config/reload）
+admin_token: "change-me-to-a-secure-random-string"
+
+# Gitea Webhook 密钥（在 Gitea 仓库 Webhook 设置中填入相同的值）
+webhook_secret: "change-me-to-webhook-secret"
+
 gitea:
   url: "http://gitea.example.com"
   token: "your-access-token"
@@ -9,6 +15,10 @@ gitea:
 environments:
   dev:
     label: "开发环境"
+    disabled: false
+    links:
+      user_url: "http://dev.example.com"
+      admin_url: "http://dev-admin.example.com"
     server:
       host: "192.168.1.10"
       port: 22
@@ -16,7 +26,11 @@ environments:
       password: "your-ssh-password"
       deploy_path: "/opt/apps"
   sit:
-    label: "集成测试环境"
+    label: "测试环境"
+    disabled: false
+    links:
+      user_url: "http://sit.example.com"
+      admin_url: "http://sit-admin.example.com"
     server:
       host: "192.168.1.20"
       port: 22
@@ -25,6 +39,10 @@ environments:
       deploy_path: "/opt/apps"
   prod:
     label: "生产环境"
+    disabled: true
+    links:
+      user_url: "http://prod.example.com"
+      admin_url: "http://prod-admin.example.com"
     server:
       host: "192.168.1.30"
       port: 22
@@ -33,10 +51,18 @@ environments:
       deploy_path: "/opt/apps"
 
 projects:
-  project-name:
-    build_cmd: "npm run build"
-    build_output: "./dist"
-    deploy_script: |
-      cd /opt/apps/project-name
-      tar -xzf deploy.tar.gz
-      systemctl restart project-name
+  # 单产物项目示例（Java 后端）
+  my-backend:
+    build_cmd: "mvn clean package -DskipTests"
+    build_output: "./target/app.jar"
+    rename_to: "app-latest.jar"
+    deploy_script: "cd /opt/apps/my-backend && mv app.jar app-bak.jar && mv app-latest.jar app.jar && systemctl restart my-backend"
+
+  # 多产物项目示例（前端 monorepo）
+  my-frontend:
+    build_cmd: "pnpm build"
+    artifacts:
+      - build_output: "./apps/user-ui/dist"
+        deploy_script: "cd /usr/share/nginx/html && rm -rf user-ui-bak && mv user-ui user-ui-bak && mv dist user-ui && nginx -s reload"
+      - build_output: "./apps/admin-ui/dist"
+        deploy_script: "cd /usr/share/nginx/html && rm -rf admin-ui-bak && mv admin-ui admin-ui-bak && mv dist admin-ui && nginx -s reload"

@@ -1,8 +1,15 @@
 package task
 
 import (
+	"archive/tar"
+	"compress/gzip"
+	"context"
 	"database/sql"
 	"fmt"
+	"io"
+	"os"
+	"path/filepath"
+	"sync"
 	"time"
 
 	"auto-deploy-platform/internal/builder"
@@ -58,6 +65,7 @@ type TaskManager interface {
 	GetTaskStatus(taskID string) (*TaskStatus, error)
 	GetTaskLogs(taskID string) (string, error)
 	ListRecords(filter RecordFilter) ([]DeployRecord, int, error)
+	CancelTask(taskID string) error
 }
 
 // validEnvironments defines the allowed deployment environments.
@@ -98,10 +106,12 @@ func IsValidTransition(from, to string) bool {
 
 // taskManager is the concrete implementation of TaskManager.
 type taskManager struct {
-	database *sql.DB
-	builder  builder.Builder
-	deployer deployer.Deployer
-	cfg      *config.AppConfig
+	database   *sql.DB
+	builder    builder.Builder
+	deployer   deployer.Deployer
+	cfg        *config.AppConfig
+	cfgManager *config.Manager
+	cancelMap  sync.Map // taskID -> context.CancelFunc
 }
 
 // NewTaskManager creates a new TaskManager instance.
@@ -114,6 +124,25 @@ func NewTaskManager(database *sql.DB, bldr builder.Builder, dplyr deployer.Deplo
 		deployer: dplyr,
 		cfg:      cfg,
 	}
+}
+
+// NewTaskManagerWithConfigManager creates a TaskManager that reads config dynamically from the Manager.
+func NewTaskManagerWithConfigManager(database *sql.DB, bldr builder.Builder, dplyr deployer.Deployer, cfgMgr *config.Manager) TaskManager {
+	return &taskManager{
+		database:   database,
+		builder:    bldr,
+		deployer:   dplyr,
+		cfg:        cfgMgr.Get(),
+		cfgManager: cfgMgr,
+	}
+}
+
+// getConfig returns the latest config, preferring the Manager if available.
+func (m *taskManager) getConfig() *config.AppConfig {
+	if m.cfgManager != nil {
+		return m.cfgManager.Get()
+	}
+	return m.cfg
 }
 
 // CreateTask validates the deploy request, creates a new task record with status "pending",
@@ -158,8 +187,10 @@ func (m *taskManager) CreateTask(req DeployRequest) (*db.DeployTask, error) {
 	}
 
 	// Launch async deployment if builder and deployer are available.
-	if m.builder != nil && m.deployer != nil && m.cfg != nil {
-		go m.executeDeployment(task)
+	if m.builder != nil && m.deployer != nil && m.getConfig() != nil {
+		ctx, cancel := context.WithCancel(context.Background())
+		m.cancelMap.Store(task.ID, cancel)
+		go m.executeDeployment(ctx, task)
 	}
 
 	return task, nil
@@ -167,14 +198,24 @@ func (m *taskManager) CreateTask(req DeployRequest) (*db.DeployTask, error) {
 
 // executeDeployment runs the full async deployment pipeline:
 // pending → cloning → building → deploying → success
-// Any stage failure sets the task to "failed" with the error recorded.
-func (m *taskManager) executeDeployment(task *db.DeployTask) {
+// Any stage failure or cancellation sets the task to "failed" with the error recorded.
+func (m *taskManager) executeDeployment(ctx context.Context, task *db.DeployTask) {
+	defer m.cancelMap.Delete(task.ID)
+
+	// Get the latest config at the start of deployment.
+	cfg := m.getConfig()
+
 	// --- Stage 1: Cloning ---
 	db.UpdateTaskStatus(m.database, task.ID, "cloning")
 	m.appendLog(task.ID, "cloning", "开始拉取代码...")
 
+	if ctx.Err() != nil {
+		m.failTask(task.ID, "任务已被取消")
+		return
+	}
+
 	// Get project config (use defaults if not found).
-	projectConfig, err := m.cfg.GetProjectConfig(task.ProjectName)
+	projectConfig, err := cfg.GetProjectConfigForEnv(task.ProjectName, task.Environment)
 	if err != nil {
 		// Use default project config if not configured.
 		projectConfig = config.ProjectConfig{
@@ -185,11 +226,11 @@ func (m *taskManager) executeDeployment(task *db.DeployTask) {
 	}
 
 	// Build repo URL from Gitea config.
-	giteaCfg := m.cfg.GetGiteaConfig()
+	giteaCfg := cfg.GetGiteaConfig()
 	repoURL := giteaCfg.URL + "/" + task.ProjectOwner + "/" + task.ProjectName + ".git"
 
 	// Build work directory.
-	workDir := m.cfg.Server.Workspace + "/" + task.ProjectOwner + "/" + task.ProjectName
+	workDir := cfg.Server.Workspace + "/" + task.ProjectOwner + "/" + task.ProjectName
 
 	// Clone or pull the code.
 	if err := m.builder.CloneOrPull(repoURL, task.Branch, workDir); err != nil {
@@ -199,6 +240,10 @@ func (m *taskManager) executeDeployment(task *db.DeployTask) {
 	m.appendLog(task.ID, "cloning", "代码拉取完成")
 
 	// --- Stage 2: Building ---
+	if ctx.Err() != nil {
+		m.failTask(task.ID, "任务已被取消")
+		return
+	}
 	db.UpdateTaskStatus(m.database, task.ID, "building")
 	m.appendLog(task.ID, "building", "开始构建...")
 
@@ -209,30 +254,74 @@ func (m *taskManager) executeDeployment(task *db.DeployTask) {
 	m.appendLog(task.ID, "building", "构建完成")
 
 	// --- Stage 3: Deploying ---
+	if ctx.Err() != nil {
+		m.failTask(task.ID, "任务已被取消")
+		return
+	}
 	db.UpdateTaskStatus(m.database, task.ID, "deploying")
 	m.appendLog(task.ID, "deploying", "开始部署...")
 
 	// Get server config for the target environment.
-	serverConfig, err := m.cfg.GetServerConfig(task.Environment)
+	serverConfig, err := cfg.GetServerConfig(task.Environment)
 	if err != nil {
 		m.failTask(task.ID, fmt.Sprintf("获取服务器配置失败: %v", err))
 		return
 	}
 
-	// Build artifact path.
-	artifactPath := workDir + "/" + projectConfig.BuildOutput
+	// Multi-artifact deploy: if artifacts list is configured, deploy each one.
+	if len(projectConfig.Artifacts) > 0 {
+		for i, artifact := range projectConfig.Artifacts {
+			m.appendLog(task.ID, "deploying", fmt.Sprintf("部署产物 [%d/%d]: %s", i+1, len(projectConfig.Artifacts), artifact.BuildOutput))
 
-	// Upload artifact to target server.
-	if err := m.deployer.Upload(artifactPath, serverConfig); err != nil {
-		m.failTask(task.ID, fmt.Sprintf("产物上传失败: %v", err))
-		return
+			artifactPath := workDir + "/" + artifact.BuildOutput
+
+			// If artifact is a directory, tar it first.
+			artifactPath, err = m.prepareArtifact(artifactPath, artifact.RenameTo)
+			if err != nil {
+				m.failTask(task.ID, fmt.Sprintf("产物准备失败 [%s]: %v", artifact.BuildOutput, err))
+				return
+			}
+
+			// Upload artifact.
+			if err := m.deployer.Upload(artifactPath, serverConfig); err != nil {
+				m.failTask(task.ID, fmt.Sprintf("产物上传失败 [%s]: %v", artifact.BuildOutput, err))
+				return
+			}
+
+			// Execute deploy script.
+			if artifact.DeployScript != "" {
+				if _, err := m.deployer.Execute(serverConfig, artifact.DeployScript); err != nil {
+					m.failTask(task.ID, fmt.Sprintf("部署脚本执行失败 [%s]: %v", artifact.BuildOutput, err))
+					return
+				}
+			}
+		}
+	} else {
+		// Single artifact deploy (original logic).
+		artifactPath := workDir + "/" + projectConfig.BuildOutput
+
+		// Prepare artifact (handles directory -> tar.gz, and rename).
+		artifactPath, err = m.prepareArtifact(artifactPath, projectConfig.RenameTo)
+		if err != nil {
+			m.failTask(task.ID, fmt.Sprintf("产物准备失败: %v", err))
+			return
+		}
+
+		// Upload artifact.
+		if err := m.deployer.Upload(artifactPath, serverConfig); err != nil {
+			m.failTask(task.ID, fmt.Sprintf("产物上传失败: %v", err))
+			return
+		}
+
+		// Execute deploy script.
+		if projectConfig.DeployScript != "" {
+			if _, err := m.deployer.Execute(serverConfig, projectConfig.DeployScript); err != nil {
+				m.failTask(task.ID, fmt.Sprintf("部署脚本执行失败: %v", err))
+				return
+			}
+		}
 	}
 
-	// Execute deploy script on target server.
-	if _, err := m.deployer.Execute(serverConfig, projectConfig.DeployScript); err != nil {
-		m.failTask(task.ID, fmt.Sprintf("部署脚本执行失败: %v", err))
-		return
-	}
 	m.appendLog(task.ID, "deploying", "部署完成")
 
 	// --- Success ---
@@ -285,6 +374,30 @@ func (m *taskManager) GetTaskStatus(taskID string) (*TaskStatus, error) {
 	}, nil
 }
 
+// CancelTask cancels a running deployment task.
+// Only tasks in cloning/building/deploying status can be cancelled.
+// Regardless of whether the running context is found, the task will be marked as failed.
+func (m *taskManager) CancelTask(taskID string) error {
+	task, err := db.GetTaskByID(m.database, taskID)
+	if err != nil {
+		return fmt.Errorf("任务不存在: %w", err)
+	}
+
+	// Only allow cancelling tasks that are in progress
+	if task.Status != "cloning" && task.Status != "building" && task.Status != "deploying" {
+		return fmt.Errorf("任务当前状态为 %q，无法中断（仅允许中断执行中的任务）", task.Status)
+	}
+
+	// Try to cancel the running goroutine if context exists
+	if cancel, ok := m.cancelMap.Load(taskID); ok {
+		cancel.(context.CancelFunc)()
+	}
+
+	// Always mark the task as failed, regardless of whether context was found
+	m.failTask(taskID, "任务已被用户中断")
+	return nil
+}
+
 // GetTaskLogs retrieves the execution logs of a deployment task by its ID.
 func (m *taskManager) GetTaskLogs(taskID string) (string, error) {
 	task, err := db.GetTaskByID(m.database, taskID)
@@ -325,4 +438,97 @@ func (m *taskManager) ListRecords(filter RecordFilter) ([]DeployRecord, int, err
 	}
 
 	return records, total, nil
+}
+
+// prepareArtifact checks if the artifact path is a directory or file.
+// If it's a directory, it creates a tar.gz archive and returns the archive path.
+// If renameTo is set and the artifact is a file, it renames the file.
+// Returns the final path to upload.
+func (m *taskManager) prepareArtifact(artifactPath string, renameTo string) (string, error) {
+	info, err := os.Stat(artifactPath)
+	if err != nil {
+		return "", fmt.Errorf("产物不存在: %s: %w", artifactPath, err)
+	}
+
+	if info.IsDir() {
+		// Directory: create a tar.gz archive
+		tarPath := artifactPath + ".tar.gz"
+		if err := createTarGz(tarPath, artifactPath); err != nil {
+			return "", fmt.Errorf("打包目录失败: %w", err)
+		}
+		// If renameTo is set, rename the tar.gz
+		if renameTo != "" {
+			dir := filepath.Dir(tarPath)
+			newPath := filepath.Join(dir, renameTo)
+			if err := os.Rename(tarPath, newPath); err != nil {
+				return "", fmt.Errorf("重命名失败: %w", err)
+			}
+			return newPath, nil
+		}
+		return tarPath, nil
+	}
+
+	// Single file: rename if needed
+	if renameTo != "" {
+		dir := filepath.Dir(artifactPath)
+		newPath := filepath.Join(dir, renameTo)
+		if err := os.Rename(artifactPath, newPath); err != nil {
+			return "", fmt.Errorf("重命名失败: %w", err)
+		}
+		return newPath, nil
+	}
+
+	return artifactPath, nil
+}
+
+// createTarGz creates a tar.gz archive of the given source directory.
+func createTarGz(tarPath string, sourceDir string) error {
+	tarFile, err := os.Create(tarPath)
+	if err != nil {
+		return err
+	}
+	defer tarFile.Close()
+
+	gzWriter := gzip.NewWriter(tarFile)
+	defer gzWriter.Close()
+
+	tarWriter := tar.NewWriter(gzWriter)
+	defer tarWriter.Close()
+
+	return filepath.Walk(sourceDir, func(path string, info os.FileInfo, err error) error {
+		if err != nil {
+			return err
+		}
+
+		// Create tar header
+		header, err := tar.FileInfoHeader(info, "")
+		if err != nil {
+			return err
+		}
+
+		// Use relative path inside the archive
+		relPath, err := filepath.Rel(filepath.Dir(sourceDir), path)
+		if err != nil {
+			return err
+		}
+		header.Name = relPath
+
+		if err := tarWriter.WriteHeader(header); err != nil {
+			return err
+		}
+
+		// Write file content (skip directories)
+		if info.IsDir() {
+			return nil
+		}
+
+		file, err := os.Open(path)
+		if err != nil {
+			return err
+		}
+		defer file.Close()
+
+		_, err = io.Copy(tarWriter, file)
+		return err
+	})
 }

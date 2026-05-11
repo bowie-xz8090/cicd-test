@@ -70,14 +70,17 @@
             v-for="env in environments"
             :key="env.key"
             class="env-radio"
+            :class="{ 'env-disabled': env.disabled }"
           >
             <input
               type="radio"
               name="environment"
               :value="env.key"
               v-model="selectedEnvironment"
+              :disabled="env.disabled"
             />
             {{ env.label }}
+            <span v-if="env.disabled" class="disabled-tag">未开放</span>
           </label>
         </div>
       </div>
@@ -96,6 +99,32 @@
         <span v-if="!canDeploy" class="hint">请先选择项目、分支和环境</span>
       </div>
     </form>
+
+    <!-- Environment quick links -->
+    <div v-if="environments.length > 0" class="env-links-section">
+      <h3>环境访问</h3>
+      <div class="env-links-grid">
+        <div v-for="env in environments" :key="env.key" class="env-link-card">
+          <span class="env-link-label">{{ env.label }}</span>
+          <div class="env-link-buttons">
+            <a
+              v-if="env.user_url"
+              :href="env.user_url"
+              target="_blank"
+              rel="noopener noreferrer"
+              class="env-link-btn user-btn"
+            >用户端</a>
+            <a
+              v-if="env.admin_url"
+              :href="env.admin_url"
+              target="_blank"
+              rel="noopener noreferrer"
+              class="env-link-btn admin-btn"
+            >管理端</a>
+          </div>
+        </div>
+      </div>
+    </div>
   </div>
 </template>
 
@@ -337,6 +366,21 @@ select:disabled {
   margin: 0;
 }
 
+.env-disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.env-disabled input[type='radio'] {
+  cursor: not-allowed;
+}
+
+.disabled-tag {
+  font-size: 0.75rem;
+  color: #9ca3af;
+  margin-left: 2px;
+}
+
 .deploy-btn {
   padding: 10px 24px;
   background: #2563eb;
@@ -367,5 +411,71 @@ select:disabled {
 .loading-hint {
   color: #6b7280;
   font-size: 0.85rem;
+}
+
+.env-links-section {
+  margin-top: 32px;
+  padding-top: 24px;
+  border-top: 1px solid #e5e7eb;
+}
+
+.env-links-section h3 {
+  font-size: 1rem;
+  margin: 0 0 12px;
+  font-weight: 600;
+}
+
+.env-links-grid {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.env-link-card {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 10px 14px;
+  border: 1px solid #e5e7eb;
+  border-radius: 6px;
+  background: #fafafa;
+}
+
+.env-link-label {
+  font-size: 0.9rem;
+  font-weight: 500;
+  color: #374151;
+}
+
+.env-link-buttons {
+  display: flex;
+  gap: 8px;
+}
+
+.env-link-btn {
+  padding: 4px 12px;
+  border-radius: 4px;
+  font-size: 0.8rem;
+  font-weight: 500;
+  text-decoration: none;
+  transition: background 0.15s;
+}
+
+.user-btn {
+  background: #dbeafe;
+  color: #1d4ed8;
+}
+
+.user-btn:hover {
+  background: #bfdbfe;
+}
+
+.admin-btn {
+  background: #fef3c7;
+  color: #92400e;
+}
+
+.admin-btn:hover {
+  background: #fde68a;
 }
 </style>

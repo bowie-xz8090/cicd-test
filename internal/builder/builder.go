@@ -39,7 +39,7 @@ func (b *builder) CloneOrPull(repoURL, branch, workDir string) error {
 
 // cloneRepo runs git clone for the specified branch into workDir.
 func (b *builder) cloneRepo(repoURL, branch, workDir string) error {
-	cmd := exec.Command("git", "clone", "--branch", branch, "--single-branch", repoURL, workDir)
+	cmd := exec.Command("git", "clone", "--branch", branch, repoURL, workDir)
 	var stderr bytes.Buffer
 	cmd.Stderr = &stderr
 
@@ -51,7 +51,18 @@ func (b *builder) cloneRepo(repoURL, branch, workDir string) error {
 
 // pullRepo fetches, checks out, and pulls the specified branch inside workDir.
 func (b *builder) pullRepo(branch, workDir string) error {
-	// git fetch origin
+	// Ensure the remote fetch refspec covers all branches (in case the repo
+	// was originally cloned with --single-branch, which restricts the refspec).
+	configCmd := exec.Command("git", "config", "remote.origin.fetch", "+refs/heads/*:refs/remotes/origin/*")
+	configCmd.Dir = workDir
+	configCmd.Run() // ignore errors — best-effort fix for legacy single-branch clones
+
+	// git clean -fd — remove untracked files/dirs left by previous builds
+	cleanCmd := exec.Command("git", "clean", "-fd")
+	cleanCmd.Dir = workDir
+	cleanCmd.Run() // ignore errors — best-effort cleanup
+
+	// git fetch origin — fetch all branches to ensure remote refs are up to date
 	fetchCmd := exec.Command("git", "fetch", "origin")
 	fetchCmd.Dir = workDir
 	var fetchStderr bytes.Buffer
@@ -60,8 +71,11 @@ func (b *builder) pullRepo(branch, workDir string) error {
 		return fmt.Errorf("git fetch failed: %s: %w", fetchStderr.String(), err)
 	}
 
-	// git checkout <branch>
-	checkoutCmd := exec.Command("git", "checkout", branch)
+	// git checkout -f -B <branch> origin/<branch>
+	// -f force-discards any local changes (e.g. build artifacts from previous runs).
+	// -B creates the branch from origin/<branch> if it doesn't exist locally,
+	// or resets it to match origin/<branch> if it does (safe for CI/CD).
+	checkoutCmd := exec.Command("git", "checkout", "-f", "-B", branch, "origin/"+branch)
 	checkoutCmd.Dir = workDir
 	var checkoutStderr bytes.Buffer
 	checkoutCmd.Stderr = &checkoutStderr

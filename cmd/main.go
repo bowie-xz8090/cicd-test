@@ -23,11 +23,13 @@ func main() {
 		configPath = envPath
 	}
 
-	// Load configuration
-	cfg, err := config.Load(configPath)
+	// Initialize config manager (supports dynamic reload)
+	cfgManager, err := config.NewManager(configPath)
 	if err != nil {
 		log.Fatalf("Failed to load config: %v", err)
 	}
+
+	cfg := cfgManager.Get()
 
 	// Initialize SQLite database
 	dbPath := "deploy.db"
@@ -49,10 +51,10 @@ func main() {
 	dplyr := deployer.NewDeployer()
 
 	// Create TaskManager
-	taskMgr := task.NewTaskManager(database, bldr, dplyr, cfg)
+	taskMgr := task.NewTaskManagerWithConfigManager(database, bldr, dplyr, cfgManager)
 
-	// Create API handler and register routes
-	handler := api.NewHandler(giteaClient, cfg, taskMgr)
+	// Create API handler with config manager for dynamic config support
+	handler := api.NewHandlerWithManager(giteaClient, cfgManager, taskMgr)
 
 	// Initialize Gin engine
 	r := gin.Default()
@@ -80,6 +82,7 @@ func main() {
 
 	addr := fmt.Sprintf(":%d", port)
 	log.Printf("Starting server on %s", addr)
+	log.Printf("Config file: %s (supports dynamic reload via API)", configPath)
 	if err := r.Run(addr); err != nil {
 		log.Fatalf("Failed to start server: %v", err)
 	}

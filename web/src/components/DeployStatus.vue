@@ -36,7 +36,7 @@
 
 <script setup lang="ts">
 import { ref, computed, onMounted, onUnmounted } from 'vue'
-import { fetchTaskStatus, type TaskStatus } from '../api/index'
+import { fetchTaskStatus, fetchEnvironments, type TaskStatus } from '../api/index'
 
 const props = defineProps<{
   taskId: string
@@ -48,6 +48,7 @@ const emit = defineEmits<{
 
 const taskStatus = ref<TaskStatus | null>(null)
 const errorMessage = ref('')
+const environmentLabels = ref<Record<string, string>>({})
 let pollingTimer: ReturnType<typeof setInterval> | null = null
 
 const STATUS_MAP: Record<string, { label: string; cssClass: string }> = {
@@ -59,11 +60,11 @@ const STATUS_MAP: Record<string, { label: string; cssClass: string }> = {
   failed: { label: '失败', cssClass: 'status-failed' },
 }
 
-const ENVIRONMENT_LABELS: Record<string, string> = {
-  dev: '开发环境',
-  sit: '集成测试环境',
-  prod: '生产环境',
-}
+const environmentLabel = computed(() => {
+  const env = taskStatus.value?.environment
+  if (!env) return ''
+  return environmentLabels.value[env] ?? env
+})
 
 const statusLabel = computed(() => {
   const status = taskStatus.value?.status
@@ -75,12 +76,6 @@ const statusClass = computed(() => {
   const status = taskStatus.value?.status
   if (!status) return 'status-pending'
   return STATUS_MAP[status]?.cssClass ?? 'status-pending'
-})
-
-const environmentLabel = computed(() => {
-  const env = taskStatus.value?.environment
-  if (!env) return ''
-  return ENVIRONMENT_LABELS[env] ?? env
 })
 
 function formatTime(timeStr: string): string {
@@ -125,6 +120,18 @@ function stopPolling() {
 }
 
 onMounted(async () => {
+  // Load environment labels from API
+  try {
+    const envs = await fetchEnvironments()
+    const labels: Record<string, string> = {}
+    for (const env of envs) {
+      labels[env.key] = env.label
+    }
+    environmentLabels.value = labels
+  } catch {
+    // Fallback: use key as label
+  }
+
   await pollStatus()
   // Only start polling if the task is not already in a terminal state
   if (taskStatus.value && !isTerminalStatus(taskStatus.value.status)) {

@@ -5,7 +5,7 @@ FROM node:18-alpine AS frontend-builder
 
 WORKDIR /build/web
 COPY web/package.json web/package-lock.json ./
-RUN npm ci
+RUN npm config set registry https://registry.npmmirror.com && npm ci
 COPY web/ ./
 RUN npm run build
 
@@ -16,6 +16,9 @@ FROM golang:1.24-alpine AS backend-builder
 
 # CGO 需要 gcc（SQLite 驱动依赖）
 RUN apk add --no-cache gcc musl-dev
+
+# 设置 Go 模块代理（解决国内网络问题）
+ENV GOPROXY=https://goproxy.cn,direct
 
 WORKDIR /build
 COPY go.mod go.sum ./
@@ -30,8 +33,33 @@ RUN CGO_ENABLED=1 go build -o auto-deploy-platform ./cmd/
 # ============================================================
 FROM alpine:3.20
 
-# 安装运行时依赖：git（拉取代码）、openssh-client（SSH 部署）、ca-certificates（HTTPS）
-RUN apk add --no-cache git openssh-client ca-certificates tzdata
+# 安装运行时依赖
+RUN apk add --no-cache \
+    git openssh-client ca-certificates tzdata \
+    # Java 构建环境（Maven + JDK）
+    openjdk21-jdk maven \
+    # Node.js 前端构建环境
+    nodejs npm \
+    # 其他工具
+    bash curl tar
+
+# 安装 pnpm
+RUN npm config set registry https://registry.npmmirror.com && npm install -g pnpm
+
+# 配置 Maven 镜像加速
+RUN mkdir -p /root/.m2 && \
+    cat > /root/.m2/settings.xml << 'EOF'
+<?xml version="1.0" encoding="UTF-8"?>
+<settings>
+  <mirrors>
+    <mirror>
+      <id>aliyun</id>
+      <mirrorOf>central</mirrorOf>
+      <url>https://maven.aliyun.com/repository/public</url>
+    </mirror>
+  </mirrors>
+</settings>
+EOF
 
 # 设置时区
 ENV TZ=Asia/Shanghai
