@@ -4,7 +4,7 @@ services:
     image: auto-deploy-platform:latest
     container_name: auto-deploy-platform
     ports:
-      - "8080:8080"
+      - "82:82"
     volumes:
       # 配置文件挂载（可读写，支持动态修改）
       - ./config.yaml:/app/config.yaml
@@ -12,14 +12,24 @@ services:
       - deploy-data:/app/data
       # 代码工作目录持久化（避免每次重新克隆）
       - deploy-workspace:/app/workspace
+      # Maven 本地仓库持久化（避免每次重新下载依赖）
+      - maven-repo:/root/.m2/repository
+      # pnpm 缓存持久化
+      - pnpm-store:/root/.local/share/pnpm/store
     environment:
       - GIN_MODE=release
       - TZ=Asia/Shanghai
       - CONFIG_PATH=/app/config.yaml
       - DB_PATH=/app/data/deploy.db
+      - MAVEN_OPTS=-Xmx1024m -XX:+UseParallelGC
+    deploy:
+      resources:
+        limits:
+          memory: 2G
+          cpus: "4"
     restart: unless-stopped
     healthcheck:
-      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:8080/api/health"]
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:82/api/health"]
       interval: 30s
       timeout: 5s
       retries: 3
@@ -28,3 +38,5 @@ services:
 volumes:
   deploy-data:
   deploy-workspace:
+  maven-repo:
+  pnpm-store:
