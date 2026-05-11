@@ -21,11 +21,12 @@ services:
       - TZ=Asia/Shanghai
       - CONFIG_PATH=/app/config.yaml
       - DB_PATH=/app/data/deploy.db
-      - MAVEN_OPTS=-Xmx1024m -XX:+UseParallelGC
+      - MAVEN_OPTS=-Xmx512m -XX:+UseParallelGC
+      - NODE_OPTIONS=--max-old-space-size=2048
     deploy:
       resources:
         limits:
-          memory: 2G
+          memory: 3G
           cpus: "4"
     restart: unless-stopped
     healthcheck:
