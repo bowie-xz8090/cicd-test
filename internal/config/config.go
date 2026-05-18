@@ -21,6 +21,7 @@ type AppConfig struct {
 type ServerAppConfig struct {
 	Port      int    `yaml:"port" json:"port"`
 	Workspace string `yaml:"workspace" json:"workspace"`
+	Title     string `yaml:"title" json:"title"`
 }
 
 // GiteaConfig holds Gitea connection information.
@@ -39,8 +40,15 @@ type EnvConfig struct {
 
 // EnvLinks holds the access URLs for an environment.
 type EnvLinks struct {
-	UserURL  string `yaml:"user_url" json:"user_url"`
-	AdminURL string `yaml:"admin_url" json:"admin_url"`
+	UserURL  string    `yaml:"user_url" json:"user_url"`
+	AdminURL string    `yaml:"admin_url" json:"admin_url"`
+	Extra    []EnvLink `yaml:"extra" json:"extra"`
+}
+
+// EnvLink represents a custom link entry.
+type EnvLink struct {
+	Label string `yaml:"label" json:"label"`
+	URL   string `yaml:"url" json:"url"`
 }
 
 // ServerConfig holds SSH connection details for a target server.

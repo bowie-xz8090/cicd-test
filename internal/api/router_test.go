@@ -23,8 +23,10 @@ import (
 type mockGiteaClient struct {
 	repos     []gitea.Repository
 	branches  []gitea.Branch
+	tags      []gitea.Tag
 	repoErr   error
 	branchErr error
+	tagErr    error
 }
 
 func (m *mockGiteaClient) ListRepos() ([]gitea.Repository, error) {
@@ -39,6 +41,13 @@ func (m *mockGiteaClient) ListBranches(owner, repo string) ([]gitea.Branch, erro
 		return nil, m.branchErr
 	}
 	return m.branches, nil
+}
+
+func (m *mockGiteaClient) ListTags(owner, repo string) ([]gitea.Tag, error) {
+	if m.tagErr != nil {
+		return nil, m.tagErr
+	}
+	return m.tags, nil
 }
 
 // mockTaskManager is a test double for task.TaskManager.

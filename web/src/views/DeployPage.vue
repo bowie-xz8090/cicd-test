@@ -42,24 +42,38 @@
         <span v-if="loadingProjects" class="loading-hint">加载项目列表中…</span>
       </div>
 
-      <!-- Branch select -->
+      <!-- Ref type toggle + Branch/Tag select -->
       <div class="form-group">
-        <label for="branch-select">分支</label>
+        <label>引用类型</label>
+        <div class="ref-type-toggle">
+          <label class="ref-radio">
+            <input type="radio" name="refType" value="branch" v-model="refType" />
+            分支
+          </label>
+          <label class="ref-radio">
+            <input type="radio" name="refType" value="tag" v-model="refType" />
+            标签
+          </label>
+        </div>
+      </div>
+
+      <div class="form-group">
+        <label for="ref-select">{{ refType === 'branch' ? '分支' : '标签' }}</label>
         <select
-          id="branch-select"
-          v-model="selectedBranch"
-          :disabled="!selectedProject || loadingBranches"
+          id="ref-select"
+          v-model="selectedRef"
+          :disabled="!selectedProject || loadingRefs"
         >
-          <option value="" disabled>请选择分支</option>
+          <option value="" disabled>{{ refType === 'branch' ? '请选择分支' : '请选择标签' }}</option>
           <option
-            v-for="branch in branches"
-            :key="branch.name"
-            :value="branch.name"
+            v-for="item in refList"
+            :key="item.name"
+            :value="item.name"
           >
-            {{ branch.name }}
+            {{ item.name }}
           </option>
         </select>
-        <span v-if="loadingBranches" class="loading-hint">加载分支列表中…</span>
+        <span v-if="loadingRefs" class="loading-hint">加载中…</span>
       </div>
 
       <!-- Environment select -->
@@ -96,7 +110,7 @@
         >
           {{ deploying ? '部署中…' : '部署' }}
         </button>
-        <span v-if="!canDeploy" class="hint">请先选择项目、分支和环境</span>
+        <span v-if="!canDeploy" class="hint">请先选择项目、{{ refType === 'branch' ? '分支' : '标签' }}和环境</span>
       </div>
     </form>
 
@@ -121,6 +135,17 @@
               rel="noopener noreferrer"
               class="env-link-btn admin-btn"
             >管理端</a>
+            <template v-if="env.extra && env.extra.length > 0">
+              <span class="env-link-divider">|</span>
+              <a
+                v-for="link in env.extra"
+                :key="link.url"
+                :href="link.url"
+                target="_blank"
+                rel="noopener noreferrer"
+                class="env-link-btn extra-btn"
+              >{{ link.label }}</a>
+            </template>
           </div>
         </div>
       </div>
@@ -133,43 +158,55 @@ import { ref, computed, watch, onMounted } from 'vue'
 import {
   fetchProjects,
   fetchBranches,
+  fetchTags,
   fetchEnvironments,
   triggerDeploy,
   type Project,
   type Branch,
+  type Tag,
   type Environment,
   type DeployResponse,
 } from '../api/index'
 import DeployStatus from '../components/DeployStatus.vue'
 
+const emit = defineEmits<{
+  deployed: []
+}>()
+
 // --- Reactive state ---
 const projects = ref<Project[]>([])
 const branches = ref<Branch[]>([])
+const tags = ref<Tag[]>([])
 const environments = ref<Environment[]>([])
 
 const selectedProject = ref('')
-const selectedBranch = ref('')
-const selectedEnvironment = ref('')
+const refType = ref<'branch' | 'tag'>('branch')
+const selectedRef = ref('')
+const selectedEnvironment = ref('dev')
 
 const errorMessage = ref('')
 const deployResult = ref<DeployResponse | null>(null)
 
 const loadingProjects = ref(false)
-const loadingBranches = ref(false)
+const loadingRefs = ref(false)
 const deploying = ref(false)
 
 const showDeployStatus = ref(false)
 
 // --- Computed ---
+const refList = computed(() => {
+  return refType.value === 'branch' ? branches.value : tags.value
+})
+
 const canDeploy = computed(() => {
-  return selectedProject.value !== '' && selectedBranch.value !== '' && selectedEnvironment.value !== ''
+  return selectedProject.value !== '' && selectedRef.value !== '' && selectedEnvironment.value !== ''
 })
 
 const deployButtonHint = computed(() => {
   if (canDeploy.value) return '点击触发部署'
   const missing: string[] = []
   if (!selectedProject.value) missing.push('项目')
-  if (!selectedBranch.value) missing.push('分支')
+  if (!selectedRef.value) missing.push(refType.value === 'branch' ? '分支' : '标签')
   if (!selectedEnvironment.value) missing.push('环境')
   return `请先选择${missing.join('、')}`
 })
@@ -200,34 +237,55 @@ async function loadEnvironments() {
   }
 }
 
-// --- Watch project selection to reload branches ---
+// --- Watch project selection to reload branches/tags ---
 watch(selectedProject, async (newVal) => {
-  selectedBranch.value = ''
+  selectedRef.value = ''
   branches.value = []
+  tags.value = []
   deployResult.value = null
 
   if (!newVal) return
+  await loadRefs()
+})
 
-  const parts = newVal.split('/')
+// --- Watch refType to reload list ---
+watch(refType, async () => {
+  selectedRef.value = ''
+  if (!selectedProject.value) return
+  await loadRefs()
+})
+
+async function loadRefs() {
+  const parts = selectedProject.value.split('/')
   if (parts.length < 2) return
 
   const owner = parts[0]
   const repo = parts.slice(1).join('/')
 
-  loadingBranches.value = true
+  loadingRefs.value = true
   try {
-    branches.value = await fetchBranches(owner, repo)
+    if (refType.value === 'branch') {
+      branches.value = await fetchBranches(owner, repo)
+    } else {
+      tags.value = await fetchTags(owner, repo)
+    }
   } catch (err: unknown) {
     const message = err instanceof Error ? err.message : '未知错误'
-    errorMessage.value = `获取分支列表失败：${message}`
+    errorMessage.value = `获取${refType.value === 'branch' ? '分支' : '标签'}列表失败：${message}`
   } finally {
-    loadingBranches.value = false
+    loadingRefs.value = false
   }
-})
+}
 
 // --- Deploy handler ---
 async function handleDeploy() {
   if (!canDeploy.value || deploying.value) return
+
+  // 二次确认防呆
+  const envLabel = environments.value.find(e => e.key === selectedEnvironment.value)?.label ?? selectedEnvironment.value
+  const refLabel = refType.value === 'branch' ? '分支' : '标签'
+  const confirmed = window.confirm(`确认部署？\n\n项目：${selectedProject.value}\n${refLabel}：${selectedRef.value}\n环境：${envLabel}`)
+  if (!confirmed) return
 
   const parts = selectedProject.value.split('/')
   if (parts.length < 2) return
@@ -244,10 +302,11 @@ async function handleDeploy() {
     deployResult.value = await triggerDeploy({
       project_owner: owner,
       project_name: repo,
-      branch: selectedBranch.value,
+      branch: selectedRef.value,
       environment: selectedEnvironment.value,
     })
     showDeployStatus.value = true
+    emit('deployed')
   } catch (err: unknown) {
     const message = err instanceof Error ? err.message : '未知错误'
     errorMessage.value = `部署触发失败：${message}`
@@ -257,15 +316,15 @@ async function handleDeploy() {
 }
 
 function onDeployComplete() {
-  // Task finished (success or failed) — polling has stopped
+  // Task finished (success or failed) — refresh history
+  emit('deployed')
 }
 </script>
 
 <style scoped>
 .deploy-page {
-  max-width: 560px;
-  margin: 0 auto;
-  padding: 32px 16px;
+  margin: 0;
+  padding: 24px 16px;
   font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
   color: #1a1a1a;
 }
@@ -353,6 +412,24 @@ select:disabled {
   flex-wrap: wrap;
 }
 
+.ref-type-toggle {
+  display: flex;
+  gap: 16px;
+}
+
+.ref-radio {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 0.9rem;
+  cursor: pointer;
+  font-weight: normal;
+}
+
+.ref-radio input[type='radio'] {
+  margin: 0;
+}
+
 .env-radio {
   display: flex;
   align-items: center;
@@ -434,7 +511,7 @@ select:disabled {
 .env-link-card {
   display: flex;
   align-items: center;
-  justify-content: space-between;
+  gap: 10px;
   padding: 10px 14px;
   border: 1px solid #e5e7eb;
   border-radius: 6px;
@@ -445,6 +522,7 @@ select:disabled {
   font-size: 0.9rem;
   font-weight: 500;
   color: #374151;
+  min-width: 72px;
 }
 
 .env-link-buttons {
@@ -477,5 +555,20 @@ select:disabled {
 
 .admin-btn:hover {
   background: #fde68a;
+}
+
+.env-link-divider {
+  color: #d1d5db;
+  font-size: 0.9rem;
+  margin: 0 2px;
+}
+
+.extra-btn {
+  background: #e0e7ff;
+  color: #3730a3;
+}
+
+.extra-btn:hover {
+  background: #c7d2fe;
 }
 </style>

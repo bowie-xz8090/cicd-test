@@ -15,12 +15,18 @@ export interface Branch {
   commit_id: string
 }
 
+export interface Tag {
+  name: string
+  commit_id: string
+}
+
 export interface Environment {
   key: string
   label: string
   disabled: boolean
   user_url: string
   admin_url: string
+  extra: { label: string; url: string }[] | null
 }
 
 export interface DeployRequest {
@@ -113,6 +119,10 @@ api.interceptors.response.use(
 
 // --- API Functions ---
 
+export async function fetchSiteInfo(): Promise<{ title: string }> {
+  return api.get('/api/site-info') as unknown as { title: string }
+}
+
 export async function fetchProjects(): Promise<Project[]> {
   return api.get('/api/projects') as unknown as Project[]
 }
@@ -124,6 +134,15 @@ export async function fetchBranches(
   return api.get(
     `/api/projects/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/branches`,
   ) as unknown as Branch[]
+}
+
+export async function fetchTags(
+  owner: string,
+  repo: string,
+): Promise<Tag[]> {
+  return api.get(
+    `/api/projects/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/tags`,
+  ) as unknown as Tag[]
 }
 
 export async function fetchEnvironments(): Promise<Environment[]> {

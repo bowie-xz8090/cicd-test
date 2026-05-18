@@ -367,7 +367,7 @@ scp docker-compose.yml root@your-server:/opt/deploy/
 cd /opt/deploy
 
 # 导入镜像
-docker load < auto-deploy-platform.tar.gz
+docker load -i auto-deploy-platform.tar
 
 # 启动
 docker compose up -d
@@ -377,6 +377,30 @@ docker compose logs -f
 ```
 
 打开浏览器访问 `http://服务器IP:8080` 即可使用。
+
+#### 更新部署（镜像升级）
+
+在开发机上重新构建并导出镜像后，传到服务器执行：
+
+```bash
+cd /opt/deploy
+
+# 1. 导入新镜像
+docker load -i auto-deploy-platform.tar
+
+# 2. 停止旧容器并用新镜像重启
+docker compose down
+docker compose up -d
+
+# 3. 确认启动成功
+docker compose logs -f
+```
+
+> **Windows 构建导出命令：**
+> ```powershell
+> docker compose build
+> docker save -o auto-deploy-platform.tar auto-deploy-platform:latest
+> ```
 
 ---
 

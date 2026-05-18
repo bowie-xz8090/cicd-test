@@ -39,7 +39,7 @@ func newSSHClient(server config.ServerConfig) (*ssh.Client, error) {
 			ssh.Password(server.Password),
 		},
 		HostKeyCallback: ssh.InsecureIgnoreHostKey(),
-		Timeout:         30 * time.Second,
+		Timeout:         120 * time.Second,
 	}
 
 	addr := fmt.Sprintf("%s:%d", server.Host, server.Port)

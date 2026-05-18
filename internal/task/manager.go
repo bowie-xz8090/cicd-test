@@ -137,6 +137,14 @@ func NewTaskManagerWithConfigManager(database *sql.DB, bldr builder.Builder, dpl
 	}
 }
 
+// ctxErrMsg returns an appropriate error message based on context error type.
+func ctxErrMsg(ctx context.Context) string {
+	if ctx.Err() == context.DeadlineExceeded {
+		return "部署超时（超过30分钟），已自动中断"
+	}
+	return "任务已被取消"
+}
+
 // getConfig returns the latest config, preferring the Manager if available.
 func (m *taskManager) getConfig() *config.AppConfig {
 	if m.cfgManager != nil {
@@ -188,7 +196,7 @@ func (m *taskManager) CreateTask(req DeployRequest) (*db.DeployTask, error) {
 
 	// Launch async deployment if builder and deployer are available.
 	if m.builder != nil && m.deployer != nil && m.getConfig() != nil {
-		ctx, cancel := context.WithCancel(context.Background())
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Minute)
 		m.cancelMap.Store(task.ID, cancel)
 		go m.executeDeployment(ctx, task)
 	}
@@ -197,7 +205,7 @@ func (m *taskManager) CreateTask(req DeployRequest) (*db.DeployTask, error) {
 }
 
 // executeDeployment runs the full async deployment pipeline:
-// pending → cloning → building → deploying → success
+// pending -> cloning -> building -> deploying -> success
 // Any stage failure or cancellation sets the task to "failed" with the error recorded.
 func (m *taskManager) executeDeployment(ctx context.Context, task *db.DeployTask) {
 	defer m.cancelMap.Delete(task.ID)
@@ -210,7 +218,7 @@ func (m *taskManager) executeDeployment(ctx context.Context, task *db.DeployTask
 	m.appendLog(task.ID, "cloning", "开始拉取代码...")
 
 	if ctx.Err() != nil {
-		m.failTask(task.ID, "任务已被取消")
+		m.failTask(task.ID, ctxErrMsg(ctx))
 		return
 	}
 
@@ -241,7 +249,7 @@ func (m *taskManager) executeDeployment(ctx context.Context, task *db.DeployTask
 
 	// --- Stage 2: Building ---
 	if ctx.Err() != nil {
-		m.failTask(task.ID, "任务已被取消")
+		m.failTask(task.ID, ctxErrMsg(ctx))
 		return
 	}
 	db.UpdateTaskStatus(m.database, task.ID, "building")
@@ -255,7 +263,7 @@ func (m *taskManager) executeDeployment(ctx context.Context, task *db.DeployTask
 
 	// --- Stage 3: Deploying ---
 	if ctx.Err() != nil {
-		m.failTask(task.ID, "任务已被取消")
+		m.failTask(task.ID, ctxErrMsg(ctx))
 		return
 	}
 	db.UpdateTaskStatus(m.database, task.ID, "deploying")

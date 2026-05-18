@@ -116,7 +116,7 @@
 </template>
 
 <script setup lang="ts">
-import { ref, reactive, computed, onMounted } from 'vue'
+import { ref, reactive, computed, onMounted, onUnmounted } from 'vue'
 import { fetchRecords, fetchEnvironments, cancelDeploy, type DeployRecord, type Environment } from '../api/index'
 import LogViewer from '../components/LogViewer.vue'
 
@@ -239,6 +239,33 @@ async function handleCancel(taskId: string) {
 }
 
 // --- Lifecycle ---
+let pollingTimer: ReturnType<typeof setInterval> | null = null
+
+function startPolling() {
+  stopPolling()
+  pollingTimer = setInterval(() => {
+    // Auto-refresh if there are running tasks
+    const hasRunning = records.value.some(r => isRunningStatus(r.status))
+    if (hasRunning) {
+      loadRecords()
+    }
+  }, 5000)
+}
+
+function stopPolling() {
+  if (pollingTimer) {
+    clearInterval(pollingTimer)
+    pollingTimer = null
+  }
+}
+
+// Expose refresh method for parent component
+function refresh() {
+  loadRecords()
+}
+
+defineExpose({ refresh })
+
 onMounted(async () => {
   // Load environment labels from API
   try {
@@ -253,15 +280,19 @@ onMounted(async () => {
     // Fallback: use key as label
   }
 
-  loadRecords()
+  await loadRecords()
+  startPolling()
+})
+
+onUnmounted(() => {
+  stopPolling()
 })
 </script>
 
 <style scoped>
 .history-page {
-  max-width: 900px;
-  margin: 0 auto;
-  padding: 32px 16px;
+  margin: 0;
+  padding: 24px 16px;
   font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
   color: #1a1a1a;
 }

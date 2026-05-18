@@ -1,6 +1,7 @@
 server:
   port: 8080
   workspace: "./workspace"
+  title: "自动部署平台"
 
 # 配置管理接口鉴权令牌（必须设置才能使用 PUT /api/config 和 POST /api/config/reload）
 admin_token: "change-me-to-a-secure-random-string"
@@ -19,24 +20,30 @@ environments:
     links:
       user_url: "http://dev.example.com"
       admin_url: "http://dev-admin.example.com"
+      extra:
+        - label: "其他系统"
+          url: "http://dev-other.example.com"
     server:
       host: "192.168.1.10"
       port: 22
-      user: "deploy"
+      user: "root"
       password: "your-ssh-password"
-      deploy_path: "/opt/apps"
+      deploy_path: "/root/temp"
   sit:
     label: "测试环境"
     disabled: false
     links:
       user_url: "http://sit.example.com"
       admin_url: "http://sit-admin.example.com"
+      extra:
+        - label: "其他系统"
+          url: "http://sit-other.example.com"
     server:
       host: "192.168.1.20"
       port: 22
-      user: "deploy"
+      user: "root"
       password: "your-ssh-password"
-      deploy_path: "/opt/apps"
+      deploy_path: "/root/temp"
   prod:
     label: "生产环境"
     disabled: true
@@ -46,23 +53,63 @@ environments:
     server:
       host: "192.168.1.30"
       port: 22
-      user: "deploy"
+      user: "root"
       password: "your-ssh-password"
-      deploy_path: "/opt/apps"
+      deploy_path: "/root/temp"
 
 projects:
-  # 单产物项目示例（Java 后端）
+  # 后端项目示例（Java Maven）
   my-backend:
-    build_cmd: "mvn clean package -DskipTests"
-    build_output: "./target/app.jar"
-    rename_to: "app-latest.jar"
-    deploy_script: "cd /opt/apps/my-backend && mv app.jar app-bak.jar && mv app-latest.jar app.jar && systemctl restart my-backend"
+    env_overrides:
+      # dev: Docker Compose 部署
+      dev:
+        build_cmd: "mvn clean package -DskipTests -Pdev -Dmaven.test.skip=true"
+        build_output: "./target/app.jar"
+        rename_to: "app.jar"
+        deploy_script: "docker cp /root/temp/app.jar my-server:/app/app.jar && docker restart my-server"
+      # sit: jar 直接运行
+      sit:
+        build_cmd: "mvn clean package -DskipTests -Psit -Dmaven.test.skip=true"
+        build_output: "./target/app.jar"
+        rename_to: "app-latest.jar"
+        deploy_script: "cd /opt/apps && (mv -f app.jar app-bak.jar || true) && mv -f /root/temp/app-latest.jar app.jar && kill -9 $(lsof -t -i:8080) && nohup java -jar app.jar --spring.profiles.active=sit > app.log 2>&1 &"
+      # prod: Docker Compose 部署（与 dev 相同方式）
+      prod:
+        build_cmd: "mvn clean package -DskipTests -Pprod -Dmaven.test.skip=true"
+        build_output: "./target/app.jar"
+        rename_to: "app.jar"
+        deploy_script: "docker cp /root/temp/app.jar my-server:/app/app.jar && docker restart my-server"
 
-  # 多产物项目示例（前端 monorepo）
+  # 前端 monorepo 项目示例（多产物）
   my-frontend:
-    build_cmd: "pnpm build"
-    artifacts:
-      - build_output: "./apps/user-ui/dist"
-        deploy_script: "cd /usr/share/nginx/html && rm -rf user-ui-bak && mv user-ui user-ui-bak && mv dist user-ui && nginx -s reload"
-      - build_output: "./apps/admin-ui/dist"
-        deploy_script: "cd /usr/share/nginx/html && rm -rf admin-ui-bak && mv admin-ui admin-ui-bak && mv dist admin-ui && nginx -s reload"
+    env_overrides:
+      # dev: Docker Compose 部署（nginx 容器）
+      dev:
+        build_cmd: "pnpm install && pnpm build:dev"
+        artifacts:
+          - build_output: "./apps/user-ui/dist"
+            rename_to: "user-ui.tar.gz"
+            deploy_script: "tar -xzf /root/temp/user-ui.tar.gz -C /tmp && docker cp /tmp/dist/. nginx-user:/usr/share/nginx/html/user/ && rm -rf /tmp/dist /root/temp/user-ui.tar.gz && docker restart nginx-user"
+          - build_output: "./apps/admin-ui/dist"
+            rename_to: "admin-ui.tar.gz"
+            deploy_script: "tar -xzf /root/temp/admin-ui.tar.gz -C /tmp && docker cp /tmp/dist/. nginx-admin:/usr/share/nginx/html/admin/ && rm -rf /tmp/dist /root/temp/admin-ui.tar.gz && docker restart nginx-admin"
+      # sit: 直接部署到宿主机 nginx
+      sit:
+        build_cmd: "pnpm install && pnpm build:sit"
+        artifacts:
+          - build_output: "./apps/user-ui/dist"
+            rename_to: "user-ui.tar.gz"
+            deploy_script: "cd /usr/share/nginx/html && rm -rf user-bak && (mv user user-bak || true) && tar -xzf /root/temp/user-ui.tar.gz && mv dist user && rm -f /root/temp/user-ui.tar.gz && nginx -s reload"
+          - build_output: "./apps/admin-ui/dist"
+            rename_to: "admin-ui.tar.gz"
+            deploy_script: "cd /usr/share/nginx/html && rm -rf admin-bak && (mv admin admin-bak || true) && tar -xzf /root/temp/admin-ui.tar.gz && mv dist admin && rm -f /root/temp/admin-ui.tar.gz && nginx -s reload"
+      # prod: Docker Compose 部署（与 dev 相同方式）
+      prod:
+        build_cmd: "pnpm install && pnpm build:prod"
+        artifacts:
+          - build_output: "./apps/user-ui/dist"
+            rename_to: "user-ui.tar.gz"
+            deploy_script: "tar -xzf /root/temp/user-ui.tar.gz -C /tmp && docker cp /tmp/dist/. nginx-user:/usr/share/nginx/html/user/ && rm -rf /tmp/dist /root/temp/user-ui.tar.gz && docker restart nginx-user"
+          - build_output: "./apps/admin-ui/dist"
+            rename_to: "admin-ui.tar.gz"
+            deploy_script: "tar -xzf /root/temp/admin-ui.tar.gz -C /tmp && docker cp /tmp/dist/. nginx-admin:/usr/share/nginx/html/admin/ && rm -rf /tmp/dist /root/temp/admin-ui.tar.gz && docker restart nginx-admin"

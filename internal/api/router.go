@@ -51,8 +51,10 @@ func (h *Handler) RegisterRoutes(r *gin.Engine) {
 	api := r.Group("/api")
 	{
 		api.GET("/health", h.handleHealth)
+		api.GET("/site-info", h.handleSiteInfo)
 		api.GET("/projects", h.handleListProjects)
 		api.GET("/projects/:owner/:repo/branches", h.handleListBranches)
+		api.GET("/projects/:owner/:repo/tags", h.handleListTags)
 		api.GET("/environments", h.handleListEnvironments)
 
 		// Deploy routes: register /deploy/records BEFORE /:id routes to avoid conflicts.
@@ -75,6 +77,21 @@ func (h *Handler) RegisterRoutes(r *gin.Engine) {
 // handleHealth returns a simple health check response.
 func (h *Handler) handleHealth(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"code": 0, "data": "ok"})
+}
+
+// handleSiteInfo returns site configuration (title, etc.) for the frontend.
+func (h *Handler) handleSiteInfo(c *gin.Context) {
+	cfg := h.getLatestConfig()
+	title := cfg.Server.Title
+	if title == "" {
+		title = "自动部署平台"
+	}
+	c.JSON(http.StatusOK, gin.H{
+		"code": 0,
+		"data": gin.H{
+			"title": title,
+		},
+	})
 }
 
 // handleListProjects fetches all repositories from Gitea and filters to only those
@@ -125,13 +142,52 @@ func (h *Handler) handleListBranches(c *gin.Context) {
 	})
 }
 
+// handleListTags fetches all tags for the specified repository from Gitea.
+func (h *Handler) handleListTags(c *gin.Context) {
+	owner := c.Param("owner")
+	repo := c.Param("repo")
+
+	tags, err := h.giteaClient.ListTags(owner, repo)
+	if err != nil {
+		c.JSON(http.StatusBadGateway, gin.H{
+			"code":    -1,
+			"message": "获取标签列表失败: " + err.Error(),
+		})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"code": 0,
+		"data": tags,
+	})
+}
+
 // EnvironmentItem represents a single environment entry in the API response.
 type EnvironmentItem struct {
-	Key      string `json:"key"`
-	Label    string `json:"label"`
-	Disabled bool   `json:"disabled"`
-	UserURL  string `json:"user_url"`
-	AdminURL string `json:"admin_url"`
+	Key      string    `json:"key"`
+	Label    string    `json:"label"`
+	Disabled bool      `json:"disabled"`
+	UserURL  string    `json:"user_url"`
+	AdminURL string    `json:"admin_url"`
+	Extra    []LinkItem `json:"extra"`
+}
+
+// LinkItem represents a custom link in the API response.
+type LinkItem struct {
+	Label string `json:"label"`
+	URL   string `json:"url"`
+}
+
+// toLinkItems converts config EnvLink slice to API LinkItem slice.
+func toLinkItems(links []config.EnvLink) []LinkItem {
+	if len(links) == 0 {
+		return nil
+	}
+	items := make([]LinkItem, len(links))
+	for i, l := range links {
+		items[i] = LinkItem{Label: l.Label, URL: l.URL}
+	}
+	return items
 }
 
 // handleListEnvironments returns the list of available deployment environments from config.
@@ -151,6 +207,7 @@ func (h *Handler) handleListEnvironments(c *gin.Context) {
 				Disabled: envCfg.Disabled,
 				UserURL:  envCfg.Links.UserURL,
 				AdminURL: envCfg.Links.AdminURL,
+				Extra:    toLinkItems(envCfg.Links.Extra),
 			})
 		}
 	}
@@ -164,6 +221,7 @@ func (h *Handler) handleListEnvironments(c *gin.Context) {
 				Disabled: envCfg.Disabled,
 				UserURL:  envCfg.Links.UserURL,
 				AdminURL: envCfg.Links.AdminURL,
+				Extra:    toLinkItems(envCfg.Links.Extra),
 			})
 		}
 	}

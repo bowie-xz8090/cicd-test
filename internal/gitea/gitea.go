@@ -24,10 +24,17 @@ type Branch struct {
 	CommitID string `json:"commit_id"`
 }
 
+// Tag represents a tag in a Gitea repository.
+type Tag struct {
+	Name     string `json:"name"`
+	CommitID string `json:"commit_id"`
+}
+
 // GiteaClient defines the interface for interacting with the Gitea API.
 type GiteaClient interface {
 	ListRepos() ([]Repository, error)
 	ListBranches(owner, repo string) ([]Branch, error)
+	ListTags(owner, repo string) ([]Tag, error)
 }
 
 // giteaClient is the concrete implementation of GiteaClient.
@@ -77,6 +84,12 @@ type giteaBranch struct {
 // giteaCommit represents the commit object in a Gitea branch response.
 type giteaCommit struct {
 	ID string `json:"id"`
+}
+
+// giteaTag represents a single tag in the Gitea API response.
+type giteaTag struct {
+	Name   string      `json:"name"`
+	Commit giteaCommit `json:"commit"`
 }
 
 // ListRepos fetches all repositories from the Gitea instance.
@@ -142,6 +155,31 @@ func (c *giteaClient) ListBranches(owner, repo string) ([]Branch, error) {
 	}
 
 	return branches, nil
+}
+
+// ListTags fetches all tags for the specified repository.
+func (c *giteaClient) ListTags(owner, repo string) ([]Tag, error) {
+	url := fmt.Sprintf("%s/api/v1/repos/%s/%s/tags", c.baseURL, owner, repo)
+
+	body, err := c.doRequest(url)
+	if err != nil {
+		return nil, fmt.Errorf("failed to list tags for %s/%s: %w", owner, repo, err)
+	}
+
+	var giteaTags []giteaTag
+	if err := json.Unmarshal(body, &giteaTags); err != nil {
+		return nil, fmt.Errorf("failed to parse tag list response for %s/%s: %w", owner, repo, err)
+	}
+
+	tags := make([]Tag, 0, len(giteaTags))
+	for _, t := range giteaTags {
+		tags = append(tags, Tag{
+			Name:     t.Name,
+			CommitID: t.Commit.ID,
+		})
+	}
+
+	return tags, nil
 }
 
 // doRequest performs an authenticated GET request to the given URL and returns the response body.
