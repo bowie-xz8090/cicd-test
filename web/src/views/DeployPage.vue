@@ -27,16 +27,16 @@
         <label for="project-select">项目</label>
         <select
           id="project-select"
-          v-model="selectedProject"
+          v-model="selectedProjectIndex"
           :disabled="loadingProjects"
         >
-          <option value="" disabled>请选择项目</option>
+          <option :value="-1" disabled>请选择项目</option>
           <option
-            v-for="project in projects"
-            :key="project.full_name"
-            :value="project.full_name"
+            v-for="(project, index) in projects"
+            :key="project.full_name + '/' + project.sub_project"
+            :value="index"
           >
-            {{ project.full_name }}
+            {{ project.label }}
           </option>
         </select>
         <span v-if="loadingProjects" class="loading-hint">加载项目列表中…</span>
@@ -62,7 +62,7 @@
         <select
           id="ref-select"
           v-model="selectedRef"
-          :disabled="!selectedProject || loadingRefs"
+          :disabled="selectedProjectIndex < 0 || loadingRefs"
         >
           <option value="" disabled>{{ refType === 'branch' ? '请选择分支' : '请选择标签' }}</option>
           <option
@@ -179,7 +179,7 @@ const branches = ref<Branch[]>([])
 const tags = ref<Tag[]>([])
 const environments = ref<Environment[]>([])
 
-const selectedProject = ref('')
+const selectedProjectIndex = ref(-1)
 const refType = ref<'branch' | 'tag'>('branch')
 const selectedRef = ref('')
 const selectedEnvironment = ref('dev')
@@ -194,12 +194,17 @@ const deploying = ref(false)
 const showDeployStatus = ref(false)
 
 // --- Computed ---
+const selectedProject = computed(() => {
+  if (selectedProjectIndex.value < 0) return null
+  return projects.value[selectedProjectIndex.value] ?? null
+})
+
 const refList = computed(() => {
   return refType.value === 'branch' ? branches.value : tags.value
 })
 
 const canDeploy = computed(() => {
-  return selectedProject.value !== '' && selectedRef.value !== '' && selectedEnvironment.value !== ''
+  return selectedProject.value !== null && selectedRef.value !== '' && selectedEnvironment.value !== ''
 })
 
 const deployButtonHint = computed(() => {
@@ -211,7 +216,7 @@ const deployButtonHint = computed(() => {
   return `请先选择${missing.join('、')}`
 })
 
-// --- Load projects and environments on mount ---
+// --- Load on mount ---
 onMounted(async () => {
   await Promise.all([loadProjects(), loadEnvironments()])
 })
@@ -230,44 +235,45 @@ async function loadProjects() {
 
 async function loadEnvironments() {
   try {
-    environments.value = await fetchEnvironments()
+    const proj = selectedProject.value
+    environments.value = await fetchEnvironments(
+      proj?.name,
+      proj?.sub_project,
+    )
   } catch (err: unknown) {
     const message = err instanceof Error ? err.message : '未知错误'
     errorMessage.value = `获取环境列表失败：${message}`
   }
 }
 
-// --- Watch project selection to reload branches/tags ---
-watch(selectedProject, async (newVal) => {
+// --- Watch project selection ---
+watch(selectedProjectIndex, async (newVal) => {
   selectedRef.value = ''
   branches.value = []
   tags.value = []
   deployResult.value = null
 
-  if (!newVal) return
-  await loadRefs()
+  if (newVal < 0) return
+  await Promise.all([loadRefs(), loadEnvironments()])
 })
 
 // --- Watch refType to reload list ---
 watch(refType, async () => {
   selectedRef.value = ''
-  if (!selectedProject.value) return
+  if (selectedProjectIndex.value < 0) return
   await loadRefs()
 })
 
 async function loadRefs() {
-  const parts = selectedProject.value.split('/')
-  if (parts.length < 2) return
-
-  const owner = parts[0]
-  const repo = parts.slice(1).join('/')
+  const proj = selectedProject.value
+  if (!proj) return
 
   loadingRefs.value = true
   try {
     if (refType.value === 'branch') {
-      branches.value = await fetchBranches(owner, repo)
+      branches.value = await fetchBranches(proj.owner, proj.name)
     } else {
-      tags.value = await fetchTags(owner, repo)
+      tags.value = await fetchTags(proj.owner, proj.name)
     }
   } catch (err: unknown) {
     const message = err instanceof Error ? err.message : '未知错误'
@@ -279,19 +285,13 @@ async function loadRefs() {
 
 // --- Deploy handler ---
 async function handleDeploy() {
-  if (!canDeploy.value || deploying.value) return
+  if (!canDeploy.value || deploying.value || !selectedProject.value) return
 
-  // 二次确认防呆
+  const proj = selectedProject.value
   const envLabel = environments.value.find(e => e.key === selectedEnvironment.value)?.label ?? selectedEnvironment.value
   const refLabel = refType.value === 'branch' ? '分支' : '标签'
-  const confirmed = window.confirm(`确认部署？\n\n项目：${selectedProject.value}\n${refLabel}：${selectedRef.value}\n环境：${envLabel}`)
-  if (!confirmed) return
-
-  const parts = selectedProject.value.split('/')
-  if (parts.length < 2) return
-
-  const owner = parts[0]
-  const repo = parts.slice(1).join('/')
+  const confirmMsg = `确认部署？\n\n项目：${proj.label}\n${refLabel}：${selectedRef.value}\n环境：${envLabel}`
+  if (!window.confirm(confirmMsg)) return
 
   deploying.value = true
   errorMessage.value = ''
@@ -300,10 +300,11 @@ async function handleDeploy() {
 
   try {
     deployResult.value = await triggerDeploy({
-      project_owner: owner,
-      project_name: repo,
+      project_owner: proj.owner,
+      project_name: proj.name,
       branch: selectedRef.value,
       environment: selectedEnvironment.value,
+      sub_project: proj.sub_project,
     })
     showDeployStatus.value = true
     emit('deployed')
@@ -316,259 +317,48 @@ async function handleDeploy() {
 }
 
 function onDeployComplete() {
-  // Task finished (success or failed) — refresh history
   emit('deployed')
 }
 </script>
 
 <style scoped>
-.deploy-page {
-  margin: 0;
-  padding: 24px 16px;
-  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
-  color: #1a1a1a;
-}
-
-h1 {
-  font-size: 1.5rem;
-  margin: 0 0 4px;
-}
-
-.subtitle {
-  color: #666;
-  margin: 0 0 24px;
-  font-size: 0.95rem;
-}
-
-.error-alert {
-  background: #fef2f2;
-  border: 1px solid #fca5a5;
-  color: #b91c1c;
-  padding: 12px 16px;
-  border-radius: 6px;
-  margin-bottom: 16px;
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  font-size: 0.9rem;
-}
-
-.error-close {
-  background: none;
-  border: none;
-  color: #b91c1c;
-  font-size: 1.2rem;
-  cursor: pointer;
-  padding: 0 0 0 12px;
-  line-height: 1;
-}
-
-.success-alert {
-  background: #f0fdf4;
-  border: 1px solid #86efac;
-  color: #166534;
-  padding: 12px 16px;
-  border-radius: 6px;
-  margin-bottom: 16px;
-  font-size: 0.9rem;
-}
-
-.deploy-form {
-  display: flex;
-  flex-direction: column;
-  gap: 20px;
-}
-
-.form-group {
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
-}
-
-.form-group > label {
-  font-weight: 600;
-  font-size: 0.9rem;
-}
-
-select {
-  padding: 8px 12px;
-  border: 1px solid #d1d5db;
-  border-radius: 6px;
-  font-size: 0.95rem;
-  background: #fff;
-  color: #1a1a1a;
-  appearance: auto;
-}
-
-select:disabled {
-  background: #f3f4f6;
-  color: #9ca3af;
-  cursor: not-allowed;
-}
-
-.env-options {
-  display: flex;
-  gap: 16px;
-  flex-wrap: wrap;
-}
-
-.ref-type-toggle {
-  display: flex;
-  gap: 16px;
-}
-
-.ref-radio {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  font-size: 0.9rem;
-  cursor: pointer;
-  font-weight: normal;
-}
-
-.ref-radio input[type='radio'] {
-  margin: 0;
-}
-
-.env-radio {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  font-size: 0.95rem;
-  cursor: pointer;
-  font-weight: normal;
-}
-
-.env-radio input[type='radio'] {
-  margin: 0;
-}
-
-.env-disabled {
-  opacity: 0.5;
-  cursor: not-allowed;
-}
-
-.env-disabled input[type='radio'] {
-  cursor: not-allowed;
-}
-
-.disabled-tag {
-  font-size: 0.75rem;
-  color: #9ca3af;
-  margin-left: 2px;
-}
-
-.deploy-btn {
-  padding: 10px 24px;
-  background: #2563eb;
-  color: #fff;
-  border: none;
-  border-radius: 6px;
-  font-size: 1rem;
-  font-weight: 600;
-  cursor: pointer;
-  transition: background 0.15s;
-  align-self: flex-start;
-}
-
-.deploy-btn:hover:not(:disabled) {
-  background: #1d4ed8;
-}
-
-.deploy-btn:disabled {
-  background: #93c5fd;
-  cursor: not-allowed;
-}
-
-.hint {
-  color: #9ca3af;
-  font-size: 0.85rem;
-}
-
-.loading-hint {
-  color: #6b7280;
-  font-size: 0.85rem;
-}
-
-.env-links-section {
-  margin-top: 32px;
-  padding-top: 24px;
-  border-top: 1px solid #e5e7eb;
-}
-
-.env-links-section h3 {
-  font-size: 1rem;
-  margin: 0 0 12px;
-  font-weight: 600;
-}
-
-.env-links-grid {
-  display: flex;
-  flex-direction: column;
-  gap: 10px;
-}
-
-.env-link-card {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  padding: 10px 14px;
-  border: 1px solid #e5e7eb;
-  border-radius: 6px;
-  background: #fafafa;
-}
-
-.env-link-label {
-  font-size: 0.9rem;
-  font-weight: 500;
-  color: #374151;
-  min-width: 72px;
-}
-
-.env-link-buttons {
-  display: flex;
-  gap: 8px;
-}
-
-.env-link-btn {
-  padding: 4px 12px;
-  border-radius: 4px;
-  font-size: 0.8rem;
-  font-weight: 500;
-  text-decoration: none;
-  transition: background 0.15s;
-}
-
-.user-btn {
-  background: #dbeafe;
-  color: #1d4ed8;
-}
-
-.user-btn:hover {
-  background: #bfdbfe;
-}
-
-.admin-btn {
-  background: #fef3c7;
-  color: #92400e;
-}
-
-.admin-btn:hover {
-  background: #fde68a;
-}
-
-.env-link-divider {
-  color: #d1d5db;
-  font-size: 0.9rem;
-  margin: 0 2px;
-}
-
-.extra-btn {
-  background: #e0e7ff;
-  color: #3730a3;
-}
-
-.extra-btn:hover {
-  background: #c7d2fe;
-}
+.deploy-page { margin: 0; padding: 24px 16px; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; color: #1a1a1a; }
+h1 { font-size: 1.5rem; margin: 0 0 4px; }
+.subtitle { color: #666; margin: 0 0 24px; font-size: 0.95rem; }
+.error-alert { background: #fef2f2; border: 1px solid #fca5a5; color: #b91c1c; padding: 12px 16px; border-radius: 6px; margin-bottom: 16px; display: flex; align-items: center; justify-content: space-between; font-size: 0.9rem; }
+.error-close { background: none; border: none; color: #b91c1c; font-size: 1.2rem; cursor: pointer; padding: 0 0 0 12px; line-height: 1; }
+.success-alert { background: #f0fdf4; border: 1px solid #86efac; color: #166534; padding: 12px 16px; border-radius: 6px; margin-bottom: 16px; font-size: 0.9rem; }
+.deploy-form { display: flex; flex-direction: column; gap: 20px; }
+.form-group { display: flex; flex-direction: column; gap: 6px; }
+.form-group > label { font-weight: 600; font-size: 0.9rem; }
+select { padding: 8px 12px; border: 1px solid #d1d5db; border-radius: 6px; font-size: 0.95rem; background: #fff; color: #1a1a1a; appearance: auto; }
+select:disabled { background: #f3f4f6; color: #9ca3af; cursor: not-allowed; }
+.env-options { display: flex; gap: 16px; flex-wrap: wrap; }
+.ref-type-toggle { display: flex; gap: 16px; }
+.ref-radio { display: flex; align-items: center; gap: 6px; font-size: 0.9rem; cursor: pointer; font-weight: normal; }
+.ref-radio input[type='radio'] { margin: 0; }
+.env-radio { display: flex; align-items: center; gap: 6px; font-size: 0.95rem; cursor: pointer; font-weight: normal; }
+.env-radio input[type='radio'] { margin: 0; }
+.env-disabled { opacity: 0.5; cursor: not-allowed; }
+.env-disabled input[type='radio'] { cursor: not-allowed; }
+.disabled-tag { font-size: 0.75rem; color: #9ca3af; margin-left: 2px; }
+.deploy-btn { padding: 10px 24px; background: #2563eb; color: #fff; border: none; border-radius: 6px; font-size: 1rem; font-weight: 600; cursor: pointer; transition: background 0.15s; align-self: flex-start; }
+.deploy-btn:hover:not(:disabled) { background: #1d4ed8; }
+.deploy-btn:disabled { background: #93c5fd; cursor: not-allowed; }
+.hint { color: #9ca3af; font-size: 0.85rem; }
+.loading-hint { color: #6b7280; font-size: 0.85rem; }
+.env-links-section { margin-top: 32px; padding-top: 24px; border-top: 1px solid #e5e7eb; }
+.env-links-section h3 { font-size: 1rem; margin: 0 0 12px; font-weight: 600; }
+.env-links-grid { display: flex; flex-direction: column; gap: 10px; }
+.env-link-card { display: flex; align-items: center; gap: 10px; padding: 10px 14px; border: 1px solid #e5e7eb; border-radius: 6px; background: #fafafa; }
+.env-link-label { font-size: 0.9rem; font-weight: 500; color: #374151; min-width: 72px; }
+.env-link-buttons { display: flex; gap: 8px; }
+.env-link-btn { padding: 4px 12px; border-radius: 4px; font-size: 0.8rem; font-weight: 500; text-decoration: none; transition: background 0.15s; }
+.user-btn { background: #dbeafe; color: #1d4ed8; }
+.user-btn:hover { background: #bfdbfe; }
+.admin-btn { background: #fef3c7; color: #92400e; }
+.admin-btn:hover { background: #fde68a; }
+.env-link-divider { color: #d1d5db; font-size: 0.9rem; margin: 0 2px; }
+.extra-btn { background: #e0e7ff; color: #3730a3; }
+.extra-btn:hover { background: #c7d2fe; }
 </style>

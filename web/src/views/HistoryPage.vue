@@ -50,6 +50,7 @@
         <thead>
           <tr>
             <th>项目名称</th>
+            <th>子项目</th>
             <th>分支</th>
             <th>环境</th>
             <th>状态</th>
@@ -64,6 +65,7 @@
               @click="handleRowClick(record.id)"
             >
               <td>{{ record.project_owner }}/{{ record.project_name }}</td>
+              <td>{{ record.sub_project || '-' }}</td>
               <td>{{ record.branch }}</td>
               <td>{{ environmentLabel(record.environment) }}</td>
               <td>
@@ -82,7 +84,7 @@
               <td>{{ formatTime(record.created_at) }}</td>
             </tr>
             <tr v-if="selectedRecordId === record.id" class="log-row">
-              <td colspan="5">
+              <td colspan="6">
                 <LogViewer :task-id="record.id" />
               </td>
             </tr>

@@ -18,27 +18,37 @@ gitea:
   url: "http://gitea.example.com"
   token: "test-token"
 
+servers:
+  dev-server:
+    host: "192.168.1.10"
+    port: 22
+    user: "deploy"
+    deploy_path: "/opt/apps"
+  sit-server:
+    host: "192.168.1.20"
+    port: 22
+    user: "deploy"
+    deploy_path: "/opt/apps"
+
 environments:
   dev:
     label: "开发环境"
-    server:
-      host: "192.168.1.10"
-      port: 22
-      user: "deploy"
-      deploy_path: "/opt/apps"
   sit:
     label: "集成测试环境"
-    server:
-      host: "192.168.1.20"
-      port: 22
-      user: "deploy"
-      deploy_path: "/opt/apps"
 
 projects:
   my-project:
-    build_cmd: "npm run build"
-    build_output: "./dist"
-    deploy_script: "systemctl restart my-project"
+    label: "我的项目"
+    sub_projects:
+      default:
+        label: "默认"
+        env_overrides:
+          dev:
+            build_cmd: "npm run build:dev"
+            server: "dev-server"
+          sit:
+            build_cmd: "npm run build:sit"
+            server: "sit-server"
 `
 
 func writeTestConfig(t *testing.T, content string) string {
@@ -152,12 +162,12 @@ func TestGetGiteaConfig(t *testing.T) {
 	assert.Equal(t, "test-token", gitea.Token)
 }
 
-func TestGetServerConfig_Exists(t *testing.T) {
+func TestGetServerConfigForSubProject_Exists(t *testing.T) {
 	path := writeTestConfig(t, validYAML)
 	cfg, err := Load(path)
 	require.NoError(t, err)
 
-	srv, err := cfg.GetServerConfig("dev")
+	srv, err := cfg.GetServerConfigForSubProject("my-project", "default", "dev")
 	require.NoError(t, err)
 	assert.Equal(t, "192.168.1.10", srv.Host)
 	assert.Equal(t, 22, srv.Port)
@@ -165,14 +175,14 @@ func TestGetServerConfig_Exists(t *testing.T) {
 	assert.Equal(t, "/opt/apps", srv.DeployPath)
 }
 
-func TestGetServerConfig_NotFound(t *testing.T) {
+func TestGetServerConfigForSubProject_NotFound(t *testing.T) {
 	path := writeTestConfig(t, validYAML)
 	cfg, err := Load(path)
 	require.NoError(t, err)
 
-	_, err = cfg.GetServerConfig("staging")
+	_, err = cfg.GetServerConfigForSubProject("my-project", "default", "staging")
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), `environment "staging" not found`)
+	assert.Contains(t, err.Error(), `environment "staging" not configured`)
 }
 
 func TestGetProjectConfig_Exists(t *testing.T) {
@@ -182,9 +192,8 @@ func TestGetProjectConfig_Exists(t *testing.T) {
 
 	proj, err := cfg.GetProjectConfig("my-project")
 	require.NoError(t, err)
-	assert.Equal(t, "npm run build", proj.BuildCmd)
-	assert.Equal(t, "./dist", proj.BuildOutput)
-	assert.Equal(t, "systemctl restart my-project", proj.DeployScript)
+	assert.Equal(t, "我的项目", proj.Label)
+	assert.Len(t, proj.SubProjects, 1)
 }
 
 func TestGetProjectConfig_NotFound(t *testing.T) {

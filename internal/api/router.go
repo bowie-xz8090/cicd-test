@@ -94,8 +94,19 @@ func (h *Handler) handleSiteInfo(c *gin.Context) {
 	})
 }
 
-// handleListProjects fetches all repositories from Gitea and filters to only those
-// configured in config.yaml.
+// ProjectItem represents a project entry in the flattened API response.
+// Each item is a deployable unit: "project_label - sub_project_label".
+type ProjectItem struct {
+	Owner      string `json:"owner"`
+	Name       string `json:"name"`
+	FullName   string `json:"full_name"`
+	Label      string `json:"label"`
+	SubProject string `json:"sub_project"`
+	CloneURL   string `json:"clone_url"`
+}
+
+// handleListProjects fetches all repositories from Gitea and returns a flattened list
+// where each entry is a "project - sub_project" deployable unit.
 func (h *Handler) handleListProjects(c *gin.Context) {
 	repos, err := h.giteaClient.ListRepos()
 	if err != nil {
@@ -106,19 +117,39 @@ func (h *Handler) handleListProjects(c *gin.Context) {
 		return
 	}
 
-	// Filter to only repos configured in config.yaml
 	cfg := h.getLatestConfig()
-	configuredProjects := cfg.Projects
-	filtered := make([]gitea.Repository, 0, len(configuredProjects))
+	items := make([]ProjectItem, 0)
+
 	for _, repo := range repos {
-		if _, ok := configuredProjects[repo.Name]; ok {
-			filtered = append(filtered, repo)
+		projCfg, ok := cfg.Projects[repo.Name]
+		if !ok {
+			continue
+		}
+
+		projLabel := projCfg.Label
+		if projLabel == "" {
+			projLabel = repo.Name
+		}
+
+		for spKey, spCfg := range projCfg.SubProjects {
+			spLabel := spCfg.Label
+			if spLabel == "" {
+				spLabel = spKey
+			}
+			items = append(items, ProjectItem{
+				Owner:      repo.Owner,
+				Name:       repo.Name,
+				FullName:   repo.FullName,
+				Label:      projLabel + " - " + spLabel,
+				SubProject: spKey,
+				CloneURL:   repo.CloneURL,
+			})
 		}
 	}
 
 	c.JSON(http.StatusOK, gin.H{
 		"code": 0,
-		"data": filtered,
+		"data": items,
 	})
 }
 
@@ -164,11 +195,11 @@ func (h *Handler) handleListTags(c *gin.Context) {
 
 // EnvironmentItem represents a single environment entry in the API response.
 type EnvironmentItem struct {
-	Key      string    `json:"key"`
-	Label    string    `json:"label"`
-	Disabled bool      `json:"disabled"`
-	UserURL  string    `json:"user_url"`
-	AdminURL string    `json:"admin_url"`
+	Key      string     `json:"key"`
+	Label    string     `json:"label"`
+	Disabled bool       `json:"disabled"`
+	UserURL  string     `json:"user_url"`
+	AdminURL string     `json:"admin_url"`
 	Extra    []LinkItem `json:"extra"`
 }
 
@@ -190,39 +221,81 @@ func toLinkItems(links []config.EnvLink) []LinkItem {
 	return items
 }
 
-// handleListEnvironments returns the list of available deployment environments from config.
-// The order is fixed: dev, sit, prod.
+// handleListEnvironments returns the list of available deployment environments.
+// Supports optional query params:
+//   - project: project name
+//   - sub_project: sub-project key
+//
+// When both are specified, environments not configured for that sub-project are marked disabled.
 func (h *Handler) handleListEnvironments(c *gin.Context) {
 	cfg := h.getLatestConfig()
+	projectName := c.Query("project")
+	subProjectName := c.Query("sub_project")
 
 	// Fixed order
 	order := []string{"dev", "sit", "prod"}
 	envs := make([]EnvironmentItem, 0, len(cfg.Environments))
 
 	for _, key := range order {
-		if envCfg, ok := cfg.Environments[key]; ok {
-			envs = append(envs, EnvironmentItem{
-				Key:      key,
-				Label:    envCfg.Label,
-				Disabled: envCfg.Disabled,
-				UserURL:  envCfg.Links.UserURL,
-				AdminURL: envCfg.Links.AdminURL,
-				Extra:    toLinkItems(envCfg.Links.Extra),
-			})
+		envCfg, ok := cfg.Environments[key]
+		if !ok {
+			continue
 		}
+
+		item := EnvironmentItem{
+			Key:      key,
+			Label:    envCfg.Label,
+			Disabled: envCfg.Disabled,
+			UserURL:  envCfg.Links.UserURL,
+			AdminURL: envCfg.Links.AdminURL,
+			Extra:    toLinkItems(envCfg.Links.Extra),
+		}
+
+		// If project+sub_project specified, check if this env is configured
+		if projectName != "" && subProjectName != "" {
+			if projCfg, ok := cfg.Projects[projectName]; ok {
+				if subProjCfg, ok := projCfg.SubProjects[subProjectName]; ok {
+					if envOverride, ok := subProjCfg.EnvOverrides[key]; ok {
+						if envOverride.Disabled != nil {
+							item.Disabled = *envOverride.Disabled
+						}
+					} else {
+						item.Disabled = true
+					}
+				}
+			}
+		}
+
+		envs = append(envs, item)
 	}
 
 	// Append any extra environments not in the fixed order
 	for key, envCfg := range cfg.Environments {
 		if key != "dev" && key != "sit" && key != "prod" {
-			envs = append(envs, EnvironmentItem{
+			item := EnvironmentItem{
 				Key:      key,
 				Label:    envCfg.Label,
 				Disabled: envCfg.Disabled,
 				UserURL:  envCfg.Links.UserURL,
 				AdminURL: envCfg.Links.AdminURL,
 				Extra:    toLinkItems(envCfg.Links.Extra),
-			})
+			}
+
+			if projectName != "" && subProjectName != "" {
+				if projCfg, ok := cfg.Projects[projectName]; ok {
+					if subProjCfg, ok := projCfg.SubProjects[subProjectName]; ok {
+						if envOverride, ok := subProjCfg.EnvOverrides[key]; ok {
+							if envOverride.Disabled != nil {
+								item.Disabled = *envOverride.Disabled
+							}
+						} else {
+							item.Disabled = true
+						}
+					}
+				}
+			}
+
+			envs = append(envs, item)
 		}
 	}
 

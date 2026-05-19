@@ -58,6 +58,14 @@ func (d *deployer) Upload(localPath string, server config.ServerConfig) error {
 	}
 	defer client.Close()
 
+	// Ensure remote deploy directory exists
+	mkdirSession, err := client.NewSession()
+	if err != nil {
+		return fmt.Errorf("failed to create SSH session: %w", err)
+	}
+	mkdirSession.Run(fmt.Sprintf("mkdir -p %s", server.DeployPath))
+	mkdirSession.Close()
+
 	// Read local file
 	fileInfo, err := os.Stat(localPath)
 	if err != nil {

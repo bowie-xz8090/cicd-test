@@ -26,6 +26,7 @@ type DeployRequest struct {
 	ProjectName  string `json:"project_name"`
 	Branch       string `json:"branch"`
 	Environment  string `json:"environment"`
+	SubProject   string `json:"sub_project"`
 }
 
 // TaskStatus represents the current status of a deployment task.
@@ -33,6 +34,7 @@ type TaskStatus struct {
 	TaskID      string    `json:"task_id"`
 	Status      string    `json:"status"`
 	ProjectName string    `json:"project_name"`
+	SubProject  string    `json:"sub_project"`
 	Branch      string    `json:"branch"`
 	Environment string    `json:"environment"`
 	CreatedAt   time.Time `json:"created_at"`
@@ -44,6 +46,7 @@ type DeployRecord struct {
 	ID           string     `json:"id"`
 	ProjectOwner string     `json:"project_owner"`
 	ProjectName  string     `json:"project_name"`
+	SubProject   string     `json:"sub_project"`
 	Branch       string     `json:"branch"`
 	Environment  string     `json:"environment"`
 	Status       string     `json:"status"`
@@ -180,6 +183,7 @@ func (m *taskManager) CreateTask(req DeployRequest) (*db.DeployTask, error) {
 		ID:           uuid.New().String(),
 		ProjectOwner: req.ProjectOwner,
 		ProjectName:  req.ProjectName,
+		SubProject:   req.SubProject,
 		Branch:       req.Branch,
 		Environment:  req.Environment,
 		Status:       "pending",
@@ -222,15 +226,17 @@ func (m *taskManager) executeDeployment(ctx context.Context, task *db.DeployTask
 		return
 	}
 
-	// Get project config (use defaults if not found).
-	projectConfig, err := cfg.GetProjectConfigForEnv(task.ProjectName, task.Environment)
+	// Sub-project is always required now.
+	if task.SubProject == "" {
+		m.failTask(task.ID, "sub_project must not be empty")
+		return
+	}
+
+	// Get sub-project config for the environment.
+	subProjEnvCfg, err := cfg.GetSubProjectConfigForEnv(task.ProjectName, task.SubProject, task.Environment)
 	if err != nil {
-		// Use default project config if not configured.
-		projectConfig = config.ProjectConfig{
-			BuildCmd:     "make build",
-			BuildOutput:  "./dist",
-			DeployScript: "",
-		}
+		m.failTask(task.ID, fmt.Sprintf("获取部署配置失败: %v", err))
+		return
 	}
 
 	// Build repo URL from Gitea config.
@@ -255,7 +261,7 @@ func (m *taskManager) executeDeployment(ctx context.Context, task *db.DeployTask
 	db.UpdateTaskStatus(m.database, task.ID, "building")
 	m.appendLog(task.ID, "building", "开始构建...")
 
-	if _, err := m.builder.Build(workDir, projectConfig.BuildCmd, task.Environment); err != nil {
+	if _, err := m.builder.Build(workDir, subProjEnvCfg.BuildCmd, task.Environment); err != nil {
 		m.failTask(task.ID, fmt.Sprintf("构建失败: %v", err))
 		return
 	}
@@ -270,16 +276,16 @@ func (m *taskManager) executeDeployment(ctx context.Context, task *db.DeployTask
 	m.appendLog(task.ID, "deploying", "开始部署...")
 
 	// Get server config for the target environment.
-	serverConfig, err := cfg.GetServerConfig(task.Environment)
+	serverConfig, err := cfg.GetServerConfigForSubProject(task.ProjectName, task.SubProject, task.Environment)
 	if err != nil {
 		m.failTask(task.ID, fmt.Sprintf("获取服务器配置失败: %v", err))
 		return
 	}
 
 	// Multi-artifact deploy: if artifacts list is configured, deploy each one.
-	if len(projectConfig.Artifacts) > 0 {
-		for i, artifact := range projectConfig.Artifacts {
-			m.appendLog(task.ID, "deploying", fmt.Sprintf("部署产物 [%d/%d]: %s", i+1, len(projectConfig.Artifacts), artifact.BuildOutput))
+	if len(subProjEnvCfg.Artifacts) > 0 {
+		for i, artifact := range subProjEnvCfg.Artifacts {
+			m.appendLog(task.ID, "deploying", fmt.Sprintf("部署产物 [%d/%d]: %s", i+1, len(subProjEnvCfg.Artifacts), artifact.BuildOutput))
 
 			artifactPath := workDir + "/" + artifact.BuildOutput
 
@@ -305,11 +311,11 @@ func (m *taskManager) executeDeployment(ctx context.Context, task *db.DeployTask
 			}
 		}
 	} else {
-		// Single artifact deploy (original logic).
-		artifactPath := workDir + "/" + projectConfig.BuildOutput
+		// Single artifact deploy.
+		artifactPath := workDir + "/" + subProjEnvCfg.BuildOutput
 
 		// Prepare artifact (handles directory -> tar.gz, and rename).
-		artifactPath, err = m.prepareArtifact(artifactPath, projectConfig.RenameTo)
+		artifactPath, err = m.prepareArtifact(artifactPath, subProjEnvCfg.RenameTo)
 		if err != nil {
 			m.failTask(task.ID, fmt.Sprintf("产物准备失败: %v", err))
 			return
@@ -322,8 +328,8 @@ func (m *taskManager) executeDeployment(ctx context.Context, task *db.DeployTask
 		}
 
 		// Execute deploy script.
-		if projectConfig.DeployScript != "" {
-			if _, err := m.deployer.Execute(serverConfig, projectConfig.DeployScript); err != nil {
+		if subProjEnvCfg.DeployScript != "" {
+			if _, err := m.deployer.Execute(serverConfig, subProjEnvCfg.DeployScript); err != nil {
 				m.failTask(task.ID, fmt.Sprintf("部署脚本执行失败: %v", err))
 				return
 			}
@@ -375,6 +381,7 @@ func (m *taskManager) GetTaskStatus(taskID string) (*TaskStatus, error) {
 		TaskID:      task.ID,
 		Status:      task.Status,
 		ProjectName: task.ProjectName,
+		SubProject:  task.SubProject,
 		Branch:      task.Branch,
 		Environment: task.Environment,
 		CreatedAt:   task.CreatedAt,
@@ -437,6 +444,7 @@ func (m *taskManager) ListRecords(filter RecordFilter) ([]DeployRecord, int, err
 			ID:           t.ID,
 			ProjectOwner: t.ProjectOwner,
 			ProjectName:  t.ProjectName,
+			SubProject:   t.SubProject,
 			Branch:       t.Branch,
 			Environment:  t.Environment,
 			Status:       t.Status,

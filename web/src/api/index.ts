@@ -6,7 +6,8 @@ export interface Project {
   owner: string
   name: string
   full_name: string
-  description: string
+  label: string
+  sub_project: string
   clone_url: string
 }
 
@@ -34,6 +35,7 @@ export interface DeployRequest {
   project_name: string
   branch: string
   environment: string
+  sub_project: string
 }
 
 export interface DeployResponse {
@@ -61,6 +63,7 @@ export interface DeployRecord {
   id: string
   project_owner: string
   project_name: string
+  sub_project: string
   branch: string
   environment: string
   status: string
@@ -145,8 +148,14 @@ export async function fetchTags(
   ) as unknown as Tag[]
 }
 
-export async function fetchEnvironments(): Promise<Environment[]> {
-  return api.get('/api/environments') as unknown as Environment[]
+export async function fetchEnvironments(
+  project?: string,
+  subProject?: string,
+): Promise<Environment[]> {
+  const params: Record<string, string> = {}
+  if (project) params.project = project
+  if (subProject) params.sub_project = subProject
+  return api.get('/api/environments', { params }) as unknown as Environment[]
 }
 
 export async function triggerDeploy(

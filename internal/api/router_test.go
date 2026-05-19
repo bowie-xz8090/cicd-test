@@ -56,6 +56,7 @@ type mockTaskManager struct {
 	getStatusFn    func(taskID string) (*task.TaskStatus, error)
 	getLogsFn      func(taskID string) (string, error)
 	listRecordsFn  func(filter task.RecordFilter) ([]task.DeployRecord, int, error)
+	cancelTaskFn   func(taskID string) error
 }
 
 func (m *mockTaskManager) CreateTask(req task.DeployRequest) (*db.DeployTask, error) {
@@ -86,6 +87,13 @@ func (m *mockTaskManager) ListRecords(filter task.RecordFilter) ([]task.DeployRe
 	return nil, 0, fmt.Errorf("not implemented")
 }
 
+func (m *mockTaskManager) CancelTask(taskID string) error {
+	if m.cancelTaskFn != nil {
+		return m.cancelTaskFn(taskID)
+	}
+	return fmt.Errorf("not implemented")
+}
+
 func setupRouter(giteaClient gitea.GiteaClient, cfg *config.AppConfig) *gin.Engine {
 	return setupRouterWithTaskMgr(giteaClient, cfg, nil)
 }
@@ -100,29 +108,45 @@ func setupRouterWithTaskMgr(giteaClient gitea.GiteaClient, cfg *config.AppConfig
 
 func testConfig() *config.AppConfig {
 	return &config.AppConfig{
+		Servers: map[string]config.ServerConfig{
+			"dev-server": {
+				Host: "192.168.1.10",
+				Port: 22,
+				User: "deploy",
+			},
+		},
 		Environments: map[string]config.EnvConfig{
 			"dev": {
 				Label: "开发环境",
-				Server: config.ServerConfig{
-					Host: "192.168.1.10",
-					Port: 22,
-					User: "deploy",
-				},
 			},
 			"sit": {
 				Label: "集成测试环境",
-				Server: config.ServerConfig{
-					Host: "192.168.1.20",
-					Port: 22,
-					User: "deploy",
-				},
 			},
 			"prod": {
 				Label: "生产环境",
-				Server: config.ServerConfig{
-					Host: "192.168.1.30",
-					Port: 22,
-					User: "deploy",
+			},
+		},
+		Projects: map[string]config.ProjectConfig{
+			"project-a": {
+				Label: "项目A",
+				SubProjects: map[string]config.SubProjectConfig{
+					"default": {
+						Label: "默认",
+						EnvOverrides: map[string]config.SubProjectEnvOverride{
+							"dev": {Server: "dev-server"},
+						},
+					},
+				},
+			},
+			"project-b": {
+				Label: "项目B",
+				SubProjects: map[string]config.SubProjectConfig{
+					"default": {
+						Label: "默认",
+						EnvOverrides: map[string]config.SubProjectEnvOverride{
+							"dev": {Server: "dev-server"},
+						},
+					},
 				},
 			},
 		},

@@ -13,6 +13,7 @@ type DeployTask struct {
 	ID           string     `json:"id" db:"id"`
 	ProjectOwner string     `json:"project_owner" db:"project_owner"`
 	ProjectName  string     `json:"project_name" db:"project_name"`
+	SubProject   string     `json:"sub_project" db:"sub_project"`
 	Branch       string     `json:"branch" db:"branch"`
 	Environment  string     `json:"environment" db:"environment"`
 	Status       string     `json:"status" db:"status"`
@@ -36,6 +37,7 @@ CREATE TABLE IF NOT EXISTS deploy_tasks (
     id TEXT PRIMARY KEY,
     project_owner TEXT NOT NULL,
     project_name TEXT NOT NULL,
+    sub_project TEXT DEFAULT '',
     branch TEXT NOT NULL,
     environment TEXT NOT NULL CHECK(environment IN ('dev', 'sit', 'prod')),
     status TEXT NOT NULL DEFAULT 'pending' CHECK(status IN ('pending', 'cloning', 'building', 'deploying', 'success', 'failed')),
@@ -49,9 +51,14 @@ CREATE TABLE IF NOT EXISTS deploy_tasks (
 
 const createIndexesSQL = `
 CREATE INDEX IF NOT EXISTS idx_deploy_tasks_project ON deploy_tasks(project_name);
+CREATE INDEX IF NOT EXISTS idx_deploy_tasks_sub_project ON deploy_tasks(sub_project);
 CREATE INDEX IF NOT EXISTS idx_deploy_tasks_environment ON deploy_tasks(environment);
 CREATE INDEX IF NOT EXISTS idx_deploy_tasks_status ON deploy_tasks(status);
 CREATE INDEX IF NOT EXISTS idx_deploy_tasks_created_at ON deploy_tasks(created_at);
+`
+
+const migrateAddSubProjectSQL = `
+ALTER TABLE deploy_tasks ADD COLUMN sub_project TEXT DEFAULT '';
 `
 
 // InitDB opens a SQLite database at the given path and creates the deploy_tasks
@@ -78,6 +85,9 @@ func InitDB(dbPath string) (*sql.DB, error) {
 		return nil, fmt.Errorf("failed to create deploy_tasks table: %w", err)
 	}
 
+	// Migration: add sub_project column if it doesn't exist (for existing databases)
+	_, _ = db.Exec(migrateAddSubProjectSQL) // Ignore error if column already exists
+
 	if _, err := db.Exec(createIndexesSQL); err != nil {
 		db.Close()
 		return nil, fmt.Errorf("failed to create indexes: %w", err)
@@ -90,8 +100,8 @@ func InitDB(dbPath string) (*sql.DB, error) {
 // The task's CreatedAt and UpdatedAt fields are stored as RFC3339 strings.
 func CreateTask(db *sql.DB, task *DeployTask) error {
 	query := `
-		INSERT INTO deploy_tasks (id, project_owner, project_name, branch, environment, status, logs, error_message, created_at, updated_at, finished_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		INSERT INTO deploy_tasks (id, project_owner, project_name, sub_project, branch, environment, status, logs, error_message, created_at, updated_at, finished_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 	`
 	var finishedAt *string
 	if task.FinishedAt != nil {
@@ -103,6 +113,7 @@ func CreateTask(db *sql.DB, task *DeployTask) error {
 		task.ID,
 		task.ProjectOwner,
 		task.ProjectName,
+		task.SubProject,
 		task.Branch,
 		task.Environment,
 		task.Status,
@@ -122,7 +133,7 @@ func CreateTask(db *sql.DB, task *DeployTask) error {
 // Returns nil and an error if the task is not found.
 func GetTaskByID(db *sql.DB, id string) (*DeployTask, error) {
 	query := `
-		SELECT id, project_owner, project_name, branch, environment, status, logs, error_message, created_at, updated_at, finished_at
+		SELECT id, project_owner, project_name, sub_project, branch, environment, status, logs, error_message, created_at, updated_at, finished_at
 		FROM deploy_tasks WHERE id = ?
 	`
 	row := db.QueryRow(query, id)
@@ -135,6 +146,7 @@ func GetTaskByID(db *sql.DB, id string) (*DeployTask, error) {
 		&task.ID,
 		&task.ProjectOwner,
 		&task.ProjectName,
+		&task.SubProject,
 		&task.Branch,
 		&task.Environment,
 		&task.Status,
@@ -280,7 +292,7 @@ func ListRecords(db *sql.DB, filter RecordFilter) ([]DeployTask, int, error) {
 
 	// Get paginated records.
 	offset := (filter.Page - 1) * filter.PageSize
-	dataQuery := "SELECT id, project_owner, project_name, branch, environment, status, logs, error_message, created_at, updated_at, finished_at FROM deploy_tasks " +
+	dataQuery := "SELECT id, project_owner, project_name, sub_project, branch, environment, status, logs, error_message, created_at, updated_at, finished_at FROM deploy_tasks " +
 		where + " ORDER BY created_at DESC LIMIT ? OFFSET ?"
 	dataArgs := append(args, filter.PageSize, offset)
 
@@ -300,6 +312,7 @@ func ListRecords(db *sql.DB, filter RecordFilter) ([]DeployTask, int, error) {
 			&task.ID,
 			&task.ProjectOwner,
 			&task.ProjectName,
+			&task.SubProject,
 			&task.Branch,
 			&task.Environment,
 			&task.Status,
