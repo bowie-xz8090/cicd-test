@@ -25,6 +25,7 @@ export interface Environment {
   key: string
   label: string
   disabled: boolean
+  need_password: boolean
   user_url: string
   admin_url: string
   extra: { label: string; url: string }[] | null
@@ -36,6 +37,7 @@ export interface DeployRequest {
   branch: string
   environment: string
   sub_project: string
+  deploy_password?: string
 }
 
 export interface DeployResponse {

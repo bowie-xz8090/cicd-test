@@ -114,6 +114,31 @@
       </div>
     </form>
 
+    <!-- Password modal -->
+    <div v-if="showPasswordModal" class="modal-overlay" @click.self="cancelPassword">
+      <div class="modal-content">
+        <h3>部署确认</h3>
+        <p class="modal-info">请输入「{{ passwordEnvLabel }}」部署密码</p>
+        <div class="password-input-wrapper">
+          <input
+            ref="passwordInputRef"
+            :type="showPassword ? 'text' : 'password'"
+            v-model="passwordInput"
+            placeholder="请输入部署密码"
+            class="password-input"
+            @keyup.enter="confirmPassword"
+          />
+          <button type="button" class="toggle-password-btn" @click="showPassword = !showPassword" :aria-label="showPassword ? '隐藏密码' : '显示密码'">
+            {{ showPassword ? '🙈' : '👁' }}
+          </button>
+        </div>
+        <div class="modal-actions">
+          <button class="modal-btn modal-cancel" @click="cancelPassword">取消</button>
+          <button class="modal-btn modal-confirm" @click="confirmPassword">确认部署</button>
+        </div>
+      </div>
+    </div>
+
     <!-- Environment quick links -->
     <div v-if="environments.length > 0" class="env-links-section">
       <h3>环境访问</h3>
@@ -154,7 +179,7 @@
 </template>
 
 <script setup lang="ts">
-import { ref, computed, watch, onMounted } from 'vue'
+import { ref, computed, watch, onMounted, nextTick } from 'vue'
 import {
   fetchProjects,
   fetchBranches,
@@ -192,6 +217,13 @@ const loadingRefs = ref(false)
 const deploying = ref(false)
 
 const showDeployStatus = ref(false)
+
+// Password modal state
+const showPasswordModal = ref(false)
+const passwordInput = ref('')
+const showPassword = ref(false)
+const passwordEnvLabel = ref('')
+const passwordInputRef = ref<HTMLInputElement | null>(null)
 
 // --- Computed ---
 const selectedProject = computed(() => {
@@ -288,10 +320,44 @@ async function handleDeploy() {
   if (!canDeploy.value || deploying.value || !selectedProject.value) return
 
   const proj = selectedProject.value
-  const envLabel = environments.value.find(e => e.key === selectedEnvironment.value)?.label ?? selectedEnvironment.value
-  const refLabel = refType.value === 'branch' ? '分支' : '标签'
-  const confirmMsg = `确认部署？\n\n项目：${proj.label}\n${refLabel}：${selectedRef.value}\n环境：${envLabel}`
-  if (!window.confirm(confirmMsg)) return
+  const selectedEnv = environments.value.find(e => e.key === selectedEnvironment.value)
+
+  if (selectedEnv?.need_password) {
+    // Show password modal
+    passwordEnvLabel.value = selectedEnv.label
+    passwordInput.value = ''
+    showPassword.value = false
+    showPasswordModal.value = true
+    await nextTick()
+    passwordInputRef.value?.focus()
+  } else {
+    // Show normal confirm dialog
+    const envLabel = selectedEnv?.label ?? selectedEnvironment.value
+    const refLabel = refType.value === 'branch' ? '分支' : '标签'
+    const confirmMsg = `确认部署？\n\n项目：${proj.label}\n${refLabel}：${selectedRef.value}\n环境：${envLabel}`
+    if (!window.confirm(confirmMsg)) return
+    await executeDeploy()
+  }
+}
+
+function cancelPassword() {
+  showPasswordModal.value = false
+  passwordInput.value = ''
+}
+
+async function confirmPassword() {
+  if (!passwordInput.value.trim()) {
+    errorMessage.value = '部署密码不能为空'
+    return
+  }
+  showPasswordModal.value = false
+  await executeDeploy(passwordInput.value.trim())
+  passwordInput.value = ''
+}
+
+async function executeDeploy(deployPassword?: string) {
+  const proj = selectedProject.value
+  if (!proj) return
 
   deploying.value = true
   errorMessage.value = ''
@@ -305,6 +371,7 @@ async function handleDeploy() {
       branch: selectedRef.value,
       environment: selectedEnvironment.value,
       sub_project: proj.sub_project,
+      deploy_password: deployPassword,
     })
     showDeployStatus.value = true
     emit('deployed')
@@ -361,4 +428,20 @@ select:disabled { background: #f3f4f6; color: #9ca3af; cursor: not-allowed; }
 .env-link-divider { color: #d1d5db; font-size: 0.9rem; margin: 0 2px; }
 .extra-btn { background: #e0e7ff; color: #3730a3; }
 .extra-btn:hover { background: #c7d2fe; }
+
+/* Password modal */
+.modal-overlay { position: fixed; top: 0; left: 0; right: 0; bottom: 0; background: rgba(0,0,0,0.4); display: flex; align-items: center; justify-content: center; z-index: 1000; }
+.modal-content { background: #fff; border-radius: 10px; padding: 28px 24px; width: 360px; max-width: 90vw; box-shadow: 0 8px 32px rgba(0,0,0,0.2); }
+.modal-content h3 { margin: 0 0 8px; font-size: 1.1rem; }
+.modal-info { color: #666; font-size: 0.9rem; margin: 0 0 16px; }
+.password-input-wrapper { position: relative; margin-bottom: 20px; }
+.password-input { width: 100%; padding: 10px 40px 10px 12px; border: 1px solid #d1d5db; border-radius: 6px; font-size: 0.95rem; box-sizing: border-box; }
+.password-input:focus { outline: none; border-color: #2563eb; box-shadow: 0 0 0 2px rgba(37,99,235,0.15); }
+.toggle-password-btn { position: absolute; right: 8px; top: 50%; transform: translateY(-50%); background: none; border: none; cursor: pointer; font-size: 1.1rem; padding: 4px; line-height: 1; }
+.modal-actions { display: flex; gap: 12px; justify-content: flex-end; }
+.modal-btn { padding: 8px 20px; border-radius: 6px; font-size: 0.9rem; font-weight: 600; cursor: pointer; border: none; }
+.modal-cancel { background: #f3f4f6; color: #374151; }
+.modal-cancel:hover { background: #e5e7eb; }
+.modal-confirm { background: #2563eb; color: #fff; }
+.modal-confirm:hover { background: #1d4ed8; }
 </style>

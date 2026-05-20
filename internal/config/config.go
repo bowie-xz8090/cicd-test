@@ -45,6 +45,7 @@ type EnvConfig struct {
 	Label    string   `yaml:"label" json:"label"`
 	Disabled bool     `yaml:"disabled" json:"disabled"`
 	Links    EnvLinks `yaml:"links" json:"links"`
+	Password string   `yaml:"password" json:"-"`
 }
 
 // EnvLinks holds the access URLs for an environment.

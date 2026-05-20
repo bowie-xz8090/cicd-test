@@ -195,12 +195,13 @@ func (h *Handler) handleListTags(c *gin.Context) {
 
 // EnvironmentItem represents a single environment entry in the API response.
 type EnvironmentItem struct {
-	Key      string     `json:"key"`
-	Label    string     `json:"label"`
-	Disabled bool       `json:"disabled"`
-	UserURL  string     `json:"user_url"`
-	AdminURL string     `json:"admin_url"`
-	Extra    []LinkItem `json:"extra"`
+	Key          string     `json:"key"`
+	Label        string     `json:"label"`
+	Disabled     bool       `json:"disabled"`
+	NeedPassword bool       `json:"need_password"`
+	UserURL      string     `json:"user_url"`
+	AdminURL     string     `json:"admin_url"`
+	Extra        []LinkItem `json:"extra"`
 }
 
 // LinkItem represents a custom link in the API response.
@@ -243,12 +244,13 @@ func (h *Handler) handleListEnvironments(c *gin.Context) {
 		}
 
 		item := EnvironmentItem{
-			Key:      key,
-			Label:    envCfg.Label,
-			Disabled: envCfg.Disabled,
-			UserURL:  envCfg.Links.UserURL,
-			AdminURL: envCfg.Links.AdminURL,
-			Extra:    toLinkItems(envCfg.Links.Extra),
+			Key:          key,
+			Label:        envCfg.Label,
+			Disabled:     envCfg.Disabled,
+			NeedPassword: envCfg.Password != "",
+			UserURL:      envCfg.Links.UserURL,
+			AdminURL:     envCfg.Links.AdminURL,
+			Extra:        toLinkItems(envCfg.Links.Extra),
 		}
 
 		// If project+sub_project specified, check if this env is configured
@@ -273,12 +275,13 @@ func (h *Handler) handleListEnvironments(c *gin.Context) {
 	for key, envCfg := range cfg.Environments {
 		if key != "dev" && key != "sit" && key != "prod" {
 			item := EnvironmentItem{
-				Key:      key,
-				Label:    envCfg.Label,
-				Disabled: envCfg.Disabled,
-				UserURL:  envCfg.Links.UserURL,
-				AdminURL: envCfg.Links.AdminURL,
-				Extra:    toLinkItems(envCfg.Links.Extra),
+				Key:          key,
+				Label:        envCfg.Label,
+				Disabled:     envCfg.Disabled,
+				NeedPassword: envCfg.Password != "",
+				UserURL:      envCfg.Links.UserURL,
+				AdminURL:     envCfg.Links.AdminURL,
+				Extra:        toLinkItems(envCfg.Links.Extra),
 			}
 
 			if projectName != "" && subProjectName != "" {
@@ -314,6 +317,18 @@ func (h *Handler) handleDeploy(c *gin.Context) {
 			"message": "请求参数错误: " + err.Error(),
 		})
 		return
+	}
+
+	// Validate deploy password if the environment has one configured
+	cfg := h.getLatestConfig()
+	if envCfg, ok := cfg.Environments[req.Environment]; ok {
+		if envCfg.Password != "" && req.DeployPassword != envCfg.Password {
+			c.JSON(http.StatusForbidden, gin.H{
+				"code":    -1,
+				"message": "部署密码错误",
+			})
+			return
+		}
 	}
 
 	deployTask, err := h.taskManager.CreateTask(req)

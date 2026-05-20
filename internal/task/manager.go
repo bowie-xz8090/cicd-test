@@ -22,11 +22,12 @@ import (
 
 // DeployRequest represents a request to create a new deployment task.
 type DeployRequest struct {
-	ProjectOwner string `json:"project_owner"`
-	ProjectName  string `json:"project_name"`
-	Branch       string `json:"branch"`
-	Environment  string `json:"environment"`
-	SubProject   string `json:"sub_project"`
+	ProjectOwner   string `json:"project_owner"`
+	ProjectName    string `json:"project_name"`
+	Branch         string `json:"branch"`
+	Environment    string `json:"environment"`
+	SubProject     string `json:"sub_project"`
+	DeployPassword string `json:"deploy_password"`
 }
 
 // TaskStatus represents the current status of a deployment task.

@@ -49,21 +49,20 @@ func (b *builder) cloneRepo(repoURL, branch, workDir string) error {
 	return nil
 }
 
-// pullRepo fetches, checks out, and pulls the specified branch inside workDir.
+// pullRepo fetches, checks out, and pulls the specified ref (branch or tag) inside workDir.
 func (b *builder) pullRepo(branch, workDir string) error {
-	// Ensure the remote fetch refspec covers all branches (in case the repo
-	// was originally cloned with --single-branch, which restricts the refspec).
+	// Ensure the remote fetch refspec covers all branches and tags.
 	configCmd := exec.Command("git", "config", "remote.origin.fetch", "+refs/heads/*:refs/remotes/origin/*")
 	configCmd.Dir = workDir
-	configCmd.Run() // ignore errors — best-effort fix for legacy single-branch clones
+	configCmd.Run() // ignore errors
 
 	// git clean -fd — remove untracked files/dirs left by previous builds
 	cleanCmd := exec.Command("git", "clean", "-fd")
 	cleanCmd.Dir = workDir
-	cleanCmd.Run() // ignore errors — best-effort cleanup
+	cleanCmd.Run() // ignore errors
 
-	// git fetch origin — fetch all branches to ensure remote refs are up to date
-	fetchCmd := exec.Command("git", "fetch", "origin")
+	// git fetch origin --tags — fetch all branches and tags
+	fetchCmd := exec.Command("git", "fetch", "origin", "--tags")
 	fetchCmd.Dir = workDir
 	var fetchStderr bytes.Buffer
 	fetchCmd.Stderr = &fetchStderr
@@ -71,16 +70,22 @@ func (b *builder) pullRepo(branch, workDir string) error {
 		return fmt.Errorf("git fetch failed: %s: %w", fetchStderr.String(), err)
 	}
 
-	// git checkout -f -B <branch> origin/<branch>
-	// -f force-discards any local changes (e.g. build artifacts from previous runs).
-	// -B creates the branch from origin/<branch> if it doesn't exist locally,
-	// or resets it to match origin/<branch> if it does (safe for CI/CD).
+	// Try checkout as branch first: git checkout -f -B <branch> origin/<branch>
 	checkoutCmd := exec.Command("git", "checkout", "-f", "-B", branch, "origin/"+branch)
 	checkoutCmd.Dir = workDir
 	var checkoutStderr bytes.Buffer
 	checkoutCmd.Stderr = &checkoutStderr
 	if err := checkoutCmd.Run(); err != nil {
-		return fmt.Errorf("git checkout failed: %s: %w", checkoutStderr.String(), err)
+		// Branch checkout failed — try as tag: git checkout -f <tag>
+		tagCmd := exec.Command("git", "checkout", "-f", branch)
+		tagCmd.Dir = workDir
+		var tagStderr bytes.Buffer
+		tagCmd.Stderr = &tagStderr
+		if tagErr := tagCmd.Run(); tagErr != nil {
+			return fmt.Errorf("git checkout failed (not a branch or tag): %s: %w", tagStderr.String(), tagErr)
+		}
+		// Tag checkout succeeded, no pull needed for tags
+		return nil
 	}
 
 	// git pull origin <branch>
