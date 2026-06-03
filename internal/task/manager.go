@@ -5,6 +5,7 @@ import (
 	"compress/gzip"
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -18,6 +19,11 @@ import (
 	"auto-deploy-platform/internal/deployer"
 
 	"github.com/google/uuid"
+)
+
+const (
+	taskTimeout   = 30 * time.Minute
+	deployTimeout = 5 * time.Minute
 )
 
 // DeployRequest represents a request to create a new deployment task.
@@ -149,6 +155,16 @@ func ctxErrMsg(ctx context.Context) string {
 	return "任务已被取消"
 }
 
+func deployCtxErrMsg(ctx context.Context, err error) string {
+	if ctx.Err() == context.DeadlineExceeded || errors.Is(err, context.DeadlineExceeded) {
+		return "部署超时（超过5分钟），已自动中断"
+	}
+	if ctx.Err() != nil {
+		return ctxErrMsg(ctx)
+	}
+	return ""
+}
+
 // getConfig returns the latest config, preferring the Manager if available.
 func (m *taskManager) getConfig() *config.AppConfig {
 	if m.cfgManager != nil {
@@ -201,7 +217,7 @@ func (m *taskManager) CreateTask(req DeployRequest) (*db.DeployTask, error) {
 
 	// Launch async deployment if builder and deployer are available.
 	if m.builder != nil && m.deployer != nil && m.getConfig() != nil {
-		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Minute)
+		ctx, cancel := context.WithTimeout(context.Background(), taskTimeout)
 		m.cancelMap.Store(task.ID, cancel)
 		go m.executeDeployment(ctx, task)
 	}
@@ -244,8 +260,9 @@ func (m *taskManager) executeDeployment(ctx context.Context, task *db.DeployTask
 	giteaCfg := cfg.GetGiteaConfig()
 	repoURL := giteaCfg.URL + "/" + task.ProjectOwner + "/" + task.ProjectName + ".git"
 
-	// Build work directory.
-	workDir := cfg.Server.Workspace + "/" + task.ProjectOwner + "/" + task.ProjectName
+	// Keep environments in separate working copies so concurrent builds of the
+	// same repository for different environments do not clean or overwrite each other.
+	workDir := filepath.Join(cfg.Server.Workspace, task.ProjectOwner, task.ProjectName, task.Environment)
 
 	// Clone or pull the code.
 	if err := m.builder.CloneOrPull(repoURL, task.Branch, workDir); err != nil {
@@ -275,6 +292,8 @@ func (m *taskManager) executeDeployment(ctx context.Context, task *db.DeployTask
 	}
 	db.UpdateTaskStatus(m.database, task.ID, "deploying")
 	m.appendLog(task.ID, "deploying", "开始部署...")
+	deployCtx, cancelDeploy := context.WithTimeout(ctx, deployTimeout)
+	defer cancelDeploy()
 
 	// Get server config for the target environment.
 	serverConfig, err := cfg.GetServerConfigForSubProject(task.ProjectName, task.SubProject, task.Environment)
@@ -288,9 +307,10 @@ func (m *taskManager) executeDeployment(ctx context.Context, task *db.DeployTask
 		for i, artifact := range subProjEnvCfg.Artifacts {
 			m.appendLog(task.ID, "deploying", fmt.Sprintf("部署产物 [%d/%d]: %s", i+1, len(subProjEnvCfg.Artifacts), artifact.BuildOutput))
 
-			artifactPath := workDir + "/" + artifact.BuildOutput
+			artifactPath := filepath.Join(workDir, artifact.BuildOutput)
 
 			// If artifact is a directory, tar it first.
+			m.appendLog(task.ID, "deploying", fmt.Sprintf("准备产物 [%s]...", artifact.BuildOutput))
 			artifactPath, err = m.prepareArtifact(artifactPath, artifact.RenameTo)
 			if err != nil {
 				m.failTask(task.ID, fmt.Sprintf("产物准备失败 [%s]: %v", artifact.BuildOutput, err))
@@ -298,14 +318,25 @@ func (m *taskManager) executeDeployment(ctx context.Context, task *db.DeployTask
 			}
 
 			// Upload artifact.
-			if err := m.deployer.Upload(artifactPath, serverConfig); err != nil {
+			m.appendLog(task.ID, "deploying", fmt.Sprintf("上传产物 [%s]...", filepath.Base(artifactPath)))
+			if err := m.deployer.Upload(deployCtx, artifactPath, serverConfig); err != nil {
+				if msg := deployCtxErrMsg(deployCtx, err); msg != "" {
+					m.failTask(task.ID, msg)
+					return
+				}
 				m.failTask(task.ID, fmt.Sprintf("产物上传失败 [%s]: %v", artifact.BuildOutput, err))
 				return
 			}
+			m.appendLog(task.ID, "deploying", fmt.Sprintf("产物上传完成 [%s]", filepath.Base(artifactPath)))
 
 			// Execute deploy script.
 			if artifact.DeployScript != "" {
-				if _, err := m.deployer.Execute(serverConfig, artifact.DeployScript); err != nil {
+				m.appendLog(task.ID, "deploying", fmt.Sprintf("执行部署脚本 [%s]...", artifact.BuildOutput))
+				if _, err := m.deployer.Execute(deployCtx, serverConfig, artifact.DeployScript); err != nil {
+					if msg := deployCtxErrMsg(deployCtx, err); msg != "" {
+						m.failTask(task.ID, msg)
+						return
+					}
 					m.failTask(task.ID, fmt.Sprintf("部署脚本执行失败 [%s]: %v", artifact.BuildOutput, err))
 					return
 				}
@@ -313,9 +344,10 @@ func (m *taskManager) executeDeployment(ctx context.Context, task *db.DeployTask
 		}
 	} else {
 		// Single artifact deploy.
-		artifactPath := workDir + "/" + subProjEnvCfg.BuildOutput
+		artifactPath := filepath.Join(workDir, subProjEnvCfg.BuildOutput)
 
 		// Prepare artifact (handles directory -> tar.gz, and rename).
+		m.appendLog(task.ID, "deploying", "准备产物...")
 		artifactPath, err = m.prepareArtifact(artifactPath, subProjEnvCfg.RenameTo)
 		if err != nil {
 			m.failTask(task.ID, fmt.Sprintf("产物准备失败: %v", err))
@@ -323,14 +355,25 @@ func (m *taskManager) executeDeployment(ctx context.Context, task *db.DeployTask
 		}
 
 		// Upload artifact.
-		if err := m.deployer.Upload(artifactPath, serverConfig); err != nil {
+		m.appendLog(task.ID, "deploying", fmt.Sprintf("上传产物 [%s]...", filepath.Base(artifactPath)))
+		if err := m.deployer.Upload(deployCtx, artifactPath, serverConfig); err != nil {
+			if msg := deployCtxErrMsg(deployCtx, err); msg != "" {
+				m.failTask(task.ID, msg)
+				return
+			}
 			m.failTask(task.ID, fmt.Sprintf("产物上传失败: %v", err))
 			return
 		}
+		m.appendLog(task.ID, "deploying", fmt.Sprintf("产物上传完成 [%s]", filepath.Base(artifactPath)))
 
 		// Execute deploy script.
 		if subProjEnvCfg.DeployScript != "" {
-			if _, err := m.deployer.Execute(serverConfig, subProjEnvCfg.DeployScript); err != nil {
+			m.appendLog(task.ID, "deploying", "执行部署脚本...")
+			if _, err := m.deployer.Execute(deployCtx, serverConfig, subProjEnvCfg.DeployScript); err != nil {
+				if msg := deployCtxErrMsg(deployCtx, err); msg != "" {
+					m.failTask(task.ID, msg)
+					return
+				}
 				m.failTask(task.ID, fmt.Sprintf("部署脚本执行失败: %v", err))
 				return
 			}

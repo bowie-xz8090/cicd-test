@@ -2,6 +2,7 @@ package deployer
 
 import (
 	"bytes"
+	"context"
 	"fmt"
 	"io"
 	"net"
@@ -17,10 +18,10 @@ import (
 // Deployer defines the interface for deploying build artifacts to target servers via SSH.
 type Deployer interface {
 	// Upload transfers a local file to the target server's deploy path via SFTP-like SCP.
-	Upload(localPath string, server config.ServerConfig) error
+	Upload(ctx context.Context, localPath string, server config.ServerConfig) error
 
 	// Execute runs a script on the target server via SSH and returns the stdout output.
-	Execute(server config.ServerConfig, script string) (string, error)
+	Execute(ctx context.Context, server config.ServerConfig, script string) (string, error)
 }
 
 // deployer is the concrete implementation of Deployer using golang.org/x/crypto/ssh.
@@ -50,8 +51,43 @@ func newSSHClient(server config.ServerConfig) (*ssh.Client, error) {
 	return client, nil
 }
 
+func closeOnCancel(ctx context.Context, client *ssh.Client, session *ssh.Session) func() {
+	done := make(chan struct{})
+	go func() {
+		select {
+		case <-ctx.Done():
+			_ = session.Close()
+			_ = client.Close()
+		case <-done:
+		}
+	}()
+	return func() {
+		close(done)
+	}
+}
+
+func waitSession(ctx context.Context, client *ssh.Client, session *ssh.Session) error {
+	done := make(chan error, 1)
+	go func() {
+		done <- session.Wait()
+	}()
+
+	select {
+	case err := <-done:
+		return err
+	case <-ctx.Done():
+		_ = session.Close()
+		_ = client.Close()
+		return ctx.Err()
+	}
+}
+
 // Upload transfers localPath to the target server's deploy path using SCP protocol over SSH.
-func (d *deployer) Upload(localPath string, server config.ServerConfig) error {
+func (d *deployer) Upload(ctx context.Context, localPath string, server config.ServerConfig) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+
 	client, err := newSSHClient(server)
 	if err != nil {
 		return err
@@ -63,7 +99,18 @@ func (d *deployer) Upload(localPath string, server config.ServerConfig) error {
 	if err != nil {
 		return fmt.Errorf("failed to create SSH session: %w", err)
 	}
-	mkdirSession.Run(fmt.Sprintf("mkdir -p %s", server.DeployPath))
+	mkdirStop := closeOnCancel(ctx, client, mkdirSession)
+	if err := mkdirSession.Start(fmt.Sprintf("mkdir -p %s", server.DeployPath)); err != nil {
+		mkdirStop()
+		mkdirSession.Close()
+		return fmt.Errorf("failed to create remote deploy directory: %w", err)
+	}
+	if err := waitSession(ctx, client, mkdirSession); err != nil {
+		mkdirStop()
+		mkdirSession.Close()
+		return fmt.Errorf("failed to create remote deploy directory: %w", err)
+	}
+	mkdirStop()
 	mkdirSession.Close()
 
 	// Read local file
@@ -100,6 +147,8 @@ func (d *deployer) Upload(localPath string, server config.ServerConfig) error {
 	if err := session.Start(fmt.Sprintf("scp -t %s", server.DeployPath)); err != nil {
 		return fmt.Errorf("failed to start remote scp: %w", err)
 	}
+	stop := closeOnCancel(ctx, client, session)
+	defer stop()
 
 	// Send SCP protocol header: C<mode> <size> <filename>
 	fmt.Fprintf(stdin, "C0644 %d %s\n", fileInfo.Size(), filepath.Base(localPath))
@@ -113,7 +162,7 @@ func (d *deployer) Upload(localPath string, server config.ServerConfig) error {
 	fmt.Fprint(stdin, "\x00")
 	stdin.Close()
 
-	if err := session.Wait(); err != nil {
+	if err := waitSession(ctx, client, session); err != nil {
 		return fmt.Errorf("scp upload to %s failed: %s: %w", remotePath, stderr.String(), err)
 	}
 
@@ -121,7 +170,11 @@ func (d *deployer) Upload(localPath string, server config.ServerConfig) error {
 }
 
 // Execute runs the given script on the target server via SSH and returns stdout.
-func (d *deployer) Execute(server config.ServerConfig, script string) (string, error) {
+func (d *deployer) Execute(ctx context.Context, server config.ServerConfig, script string) (string, error) {
+	if err := ctx.Err(); err != nil {
+		return "", err
+	}
+
 	client, err := newSSHClient(server)
 	if err != nil {
 		return "", err
@@ -139,7 +192,13 @@ func (d *deployer) Execute(server config.ServerConfig, script string) (string, e
 	session.Stdout = &stdout
 	session.Stderr = &stderr
 
-	if err := session.Run(script); err != nil {
+	if err := session.Start(script); err != nil {
+		return "", fmt.Errorf("failed to start remote command: %w", err)
+	}
+	stop := closeOnCancel(ctx, client, session)
+	defer stop()
+
+	if err := waitSession(ctx, client, session); err != nil {
 		// Check if it's a network error vs command error
 		if _, ok := err.(*net.OpError); ok {
 			return "", fmt.Errorf("SSH connection lost during execution: %w", err)

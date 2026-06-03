@@ -248,6 +248,26 @@ const deployButtonHint = computed(() => {
   return `请先选择${missing.join('、')}`
 })
 
+function compareText(a: string, b: string): number {
+  return a.localeCompare(b, 'zh-CN', { numeric: true, sensitivity: 'base' })
+}
+
+function sortProjects(list: Project[]): Project[] {
+  return [...list].sort((a, b) => {
+    return (
+      compareText(a.label, b.label) ||
+      compareText(a.owner, b.owner) ||
+      compareText(a.name, b.name) ||
+      compareText(a.full_name, b.full_name) ||
+      compareText(a.sub_project, b.sub_project)
+    )
+  })
+}
+
+function sortRefs<T extends { name: string }>(list: T[]): T[] {
+  return [...list].sort((a, b) => compareText(a.name, b.name))
+}
+
 // --- Load on mount ---
 onMounted(async () => {
   await Promise.all([loadProjects(), loadEnvironments()])
@@ -256,7 +276,7 @@ onMounted(async () => {
 async function loadProjects() {
   loadingProjects.value = true
   try {
-    projects.value = await fetchProjects()
+    projects.value = sortProjects(await fetchProjects())
   } catch (err: unknown) {
     const message = err instanceof Error ? err.message : '未知错误'
     errorMessage.value = `获取项目列表失败：${message}`
@@ -303,9 +323,9 @@ async function loadRefs() {
   loadingRefs.value = true
   try {
     if (refType.value === 'branch') {
-      branches.value = await fetchBranches(proj.owner, proj.name)
+      branches.value = sortRefs(await fetchBranches(proj.owner, proj.name))
     } else {
-      tags.value = await fetchTags(proj.owner, proj.name)
+      tags.value = sortRefs(await fetchTags(proj.owner, proj.name))
     }
   } catch (err: unknown) {
     const message = err instanceof Error ? err.message : '未知错误'

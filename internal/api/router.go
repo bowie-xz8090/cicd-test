@@ -2,6 +2,7 @@ package api
 
 import (
 	"net/http"
+	"sort"
 	"strings"
 
 	"auto-deploy-platform/internal/config"
@@ -146,6 +147,21 @@ func (h *Handler) handleListProjects(c *gin.Context) {
 			})
 		}
 	}
+	sort.SliceStable(items, func(i, j int) bool {
+		if items[i].Label != items[j].Label {
+			return items[i].Label < items[j].Label
+		}
+		if items[i].Owner != items[j].Owner {
+			return items[i].Owner < items[j].Owner
+		}
+		if items[i].Name != items[j].Name {
+			return items[i].Name < items[j].Name
+		}
+		if items[i].FullName != items[j].FullName {
+			return items[i].FullName < items[j].FullName
+		}
+		return items[i].SubProject < items[j].SubProject
+	})
 
 	c.JSON(http.StatusOK, gin.H{
 		"code": 0,
@@ -166,6 +182,9 @@ func (h *Handler) handleListBranches(c *gin.Context) {
 		})
 		return
 	}
+	sort.SliceStable(branches, func(i, j int) bool {
+		return branches[i].Name < branches[j].Name
+	})
 
 	c.JSON(http.StatusOK, gin.H{
 		"code": 0,
@@ -186,6 +205,9 @@ func (h *Handler) handleListTags(c *gin.Context) {
 		})
 		return
 	}
+	sort.SliceStable(tags, func(i, j int) bool {
+		return tags[i].Name < tags[j].Name
+	})
 
 	c.JSON(http.StatusOK, gin.H{
 		"code": 0,
