@@ -51,7 +51,7 @@
           <tr>
             <th>项目名称</th>
             <th>子项目</th>
-            <th>分支</th>
+            <th>分支/Tag</th>
             <th>环境</th>
             <th>状态</th>
             <th>触发时间</th>
@@ -64,8 +64,8 @@
               :class="{ 'row-selected': selectedRecordId === record.id }"
               @click="handleRowClick(record.id)"
             >
-              <td>{{ record.project_owner }}/{{ record.project_name }}</td>
-              <td>{{ record.sub_project || '-' }}</td>
+              <td>{{ record.project_label || record.project_name }}</td>
+              <td>{{ record.sub_project_label || record.sub_project || '-' }}</td>
               <td>{{ record.branch }}</td>
               <td>{{ environmentLabel(record.environment) }}</td>
               <td>

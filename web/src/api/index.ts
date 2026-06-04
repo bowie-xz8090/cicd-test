@@ -65,7 +65,9 @@ export interface DeployRecord {
   id: string
   project_owner: string
   project_name: string
+  project_label: string
   sub_project: string
+  sub_project_label: string
   branch: string
   environment: string
   status: string

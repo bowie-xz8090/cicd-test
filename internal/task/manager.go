@@ -50,15 +50,17 @@ type TaskStatus struct {
 
 // DeployRecord represents a deployment record for list results.
 type DeployRecord struct {
-	ID           string     `json:"id"`
-	ProjectOwner string     `json:"project_owner"`
-	ProjectName  string     `json:"project_name"`
-	SubProject   string     `json:"sub_project"`
-	Branch       string     `json:"branch"`
-	Environment  string     `json:"environment"`
-	Status       string     `json:"status"`
-	CreatedAt    time.Time  `json:"created_at"`
-	FinishedAt   *time.Time `json:"finished_at"`
+	ID              string     `json:"id"`
+	ProjectOwner    string     `json:"project_owner"`
+	ProjectName     string     `json:"project_name"`
+	ProjectLabel    string     `json:"project_label"`
+	SubProject      string     `json:"sub_project"`
+	SubProjectLabel string     `json:"sub_project_label"`
+	Branch          string     `json:"branch"`
+	Environment     string     `json:"environment"`
+	Status          string     `json:"status"`
+	CreatedAt       time.Time  `json:"created_at"`
+	FinishedAt      *time.Time `json:"finished_at"`
 }
 
 // RecordFilter holds filtering and pagination parameters for listing deploy records.
@@ -483,17 +485,32 @@ func (m *taskManager) ListRecords(filter RecordFilter) ([]DeployRecord, int, err
 	}
 
 	records := make([]DeployRecord, len(tasks))
+	cfg := m.getConfig()
 	for i, t := range tasks {
+		projectLabel := t.ProjectName
+		subProjectLabel := t.SubProject
+		if cfg != nil {
+			if projCfg, ok := cfg.Projects[t.ProjectName]; ok {
+				if projCfg.Label != "" {
+					projectLabel = projCfg.Label
+				}
+				if subProjCfg, ok := projCfg.SubProjects[t.SubProject]; ok && subProjCfg.Label != "" {
+					subProjectLabel = subProjCfg.Label
+				}
+			}
+		}
 		records[i] = DeployRecord{
-			ID:           t.ID,
-			ProjectOwner: t.ProjectOwner,
-			ProjectName:  t.ProjectName,
-			SubProject:   t.SubProject,
-			Branch:       t.Branch,
-			Environment:  t.Environment,
-			Status:       t.Status,
-			CreatedAt:    t.CreatedAt,
-			FinishedAt:   t.FinishedAt,
+			ID:              t.ID,
+			ProjectOwner:    t.ProjectOwner,
+			ProjectName:     t.ProjectName,
+			ProjectLabel:    projectLabel,
+			SubProject:      t.SubProject,
+			SubProjectLabel: subProjectLabel,
+			Branch:          t.Branch,
+			Environment:     t.Environment,
+			Status:          t.Status,
+			CreatedAt:       t.CreatedAt,
+			FinishedAt:      t.FinishedAt,
 		}
 	}
 
