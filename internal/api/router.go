@@ -49,7 +49,12 @@ func (h *Handler) getLatestConfig() *config.AppConfig {
 
 // RegisterRoutes registers all API routes on the given Gin engine.
 func (h *Handler) RegisterRoutes(r *gin.Engine) {
-	api := r.Group("/api")
+	h.RegisterRoutesWithBasePath(r, "")
+}
+
+// RegisterRoutesWithBasePath registers API routes under an optional application base path.
+func (h *Handler) RegisterRoutesWithBasePath(r *gin.Engine, basePath string) {
+	api := r.Group(joinRoutePath(basePath, "/api"))
 	{
 		api.GET("/health", h.handleHealth)
 		api.GET("/site-info", h.handleSiteInfo)
@@ -73,6 +78,15 @@ func (h *Handler) RegisterRoutes(r *gin.Engine) {
 			configGroup.POST("/reload", h.handleReloadConfig)
 		}
 	}
+}
+
+func joinRoutePath(basePath, routePath string) string {
+	basePath = strings.TrimSpace(basePath)
+	if basePath == "" || basePath == "/" {
+		return routePath
+	}
+	basePath = "/" + strings.Trim(basePath, "/")
+	return basePath + routePath
 }
 
 // handleHealth returns a simple health check response.

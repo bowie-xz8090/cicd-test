@@ -3,7 +3,9 @@ package main
 import (
 	"fmt"
 	"log"
+	"net/http"
 	"os"
+	"strings"
 
 	"auto-deploy-platform/internal/api"
 	"auto-deploy-platform/internal/builder"
@@ -58,18 +60,37 @@ func main() {
 
 	// Initialize Gin engine
 	r := gin.Default()
-	handler.RegisterRoutes(r)
+	basePath := resolveBasePath(cfg)
+	handler.RegisterRoutesWithBasePath(r, basePath)
 
 	// Serve frontend static files in production mode
 	distDir := "./web/dist"
 	if _, err := os.Stat(distDir); err == nil {
-		r.Static("/assets", distDir+"/assets")
-		r.StaticFile("/", distDir+"/index.html")
+		indexFile := distDir + "/index.html"
+		r.Static(joinAppPath(basePath, "/assets"), distDir+"/assets")
+		r.GET(joinAppPath(basePath, "/"), func(c *gin.Context) {
+			c.File(indexFile)
+		})
+		if basePath != "" {
+			r.GET(basePath, func(c *gin.Context) {
+				c.Redirect(http.StatusMovedPermanently, basePath+"/")
+			})
+		}
 		// SPA fallback: serve index.html for any route not matched by API or static assets
 		r.NoRoute(func(c *gin.Context) {
-			c.File(distDir + "/index.html")
+			requestPath := c.Request.URL.Path
+			apiPath := joinAppPath(basePath, "/api")
+			if requestPath == apiPath || strings.HasPrefix(requestPath, apiPath+"/") {
+				c.Status(http.StatusNotFound)
+				return
+			}
+			if basePath == "" || requestPath == basePath || strings.HasPrefix(requestPath, basePath+"/") {
+				c.File(indexFile)
+				return
+			}
+			c.Status(http.StatusNotFound)
 		})
-		log.Printf("Serving frontend static files from %s", distDir)
+		log.Printf("Serving frontend static files from %s under base path %q", distDir, displayBasePath(basePath))
 	} else {
 		log.Printf("Warning: frontend dist directory %s not found, skipping static file serving", distDir)
 	}
@@ -86,4 +107,37 @@ func main() {
 	if err := r.Run(addr); err != nil {
 		log.Fatalf("Failed to start server: %v", err)
 	}
+}
+
+func resolveBasePath(cfg *config.AppConfig) string {
+	basePath := ""
+	if cfg != nil {
+		basePath = cfg.Server.BasePath
+	}
+	if envBasePath := os.Getenv("BASE_PATH"); envBasePath != "" {
+		basePath = envBasePath
+	}
+	return normalizeBasePath(basePath)
+}
+
+func normalizeBasePath(basePath string) string {
+	basePath = strings.TrimSpace(basePath)
+	if basePath == "" || basePath == "/" {
+		return ""
+	}
+	return "/" + strings.Trim(basePath, "/")
+}
+
+func joinAppPath(basePath, path string) string {
+	if basePath == "" {
+		return path
+	}
+	return basePath + path
+}
+
+func displayBasePath(basePath string) string {
+	if basePath == "" {
+		return "/"
+	}
+	return basePath
 }

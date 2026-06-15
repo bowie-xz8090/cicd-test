@@ -1,7 +1,8 @@
 import { createRouter, createWebHistory } from 'vue-router'
+import { getRuntimeBasePath } from '../utils/basePath'
 
 const router = createRouter({
-  history: createWebHistory(),
+  history: createWebHistory(getRuntimeBasePath() || '/'),
   routes: [
     {
       path: '/',

@@ -4,7 +4,7 @@ services:
     image: auto-deploy-platform:latest
     container_name: auto-deploy-platform
     ports:
-      - "82:82"
+      - "127.0.0.1:82:82"
     volumes:
       # 配置文件挂载（可读写，支持动态修改）
       - ./config.yaml:/app/config.yaml
@@ -21,6 +21,7 @@ services:
       - TZ=Asia/Shanghai
       - CONFIG_PATH=/app/config.yaml
       - DB_PATH=/app/data/deploy.db
+      - BASE_PATH=/
       - MAVEN_OPTS=-Xmx512m -XX:+UseParallelGC
       - NODE_OPTIONS=--max-old-space-size=2048
     deploy:
@@ -30,7 +31,7 @@ services:
           cpus: "4"
     restart: unless-stopped
     healthcheck:
-      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:82/api/health"]
+      test: ["CMD-SHELL", "wget --no-verbose --tries=1 --spider \"http://localhost:82$${BASE_PATH:-}/api/health\""]
       interval: 30s
       timeout: 5s
       retries: 3

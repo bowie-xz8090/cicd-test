@@ -1,4 +1,5 @@
 import axios from 'axios'
+import { getRuntimeBasePath } from '../utils/basePath'
 
 // --- TypeScript Interfaces ---
 
@@ -102,7 +103,7 @@ export class ApiError extends Error {
 // --- Axios Instance ---
 
 const api = axios.create({
-  baseURL: '',
+  baseURL: getRuntimeBasePath(),
   timeout: 30000,
 })
 

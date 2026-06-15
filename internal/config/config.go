@@ -23,6 +23,7 @@ type ServerAppConfig struct {
 	Port      int    `yaml:"port" json:"port"`
 	Workspace string `yaml:"workspace" json:"workspace"`
 	Title     string `yaml:"title" json:"title"`
+	BasePath  string `yaml:"base_path" json:"base_path"`
 }
 
 // GiteaConfig holds Gitea connection information.
@@ -69,7 +70,7 @@ type ProjectConfig struct {
 
 // SubProjectConfig holds configuration for a sub-project (deployment target).
 type SubProjectConfig struct {
-	Label        string                          `yaml:"label" json:"label"`
+	Label        string                           `yaml:"label" json:"label"`
 	EnvOverrides map[string]SubProjectEnvOverride `yaml:"env_overrides" json:"env_overrides"`
 }
 

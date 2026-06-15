@@ -52,11 +52,11 @@ func (m *mockGiteaClient) ListTags(owner, repo string) ([]gitea.Tag, error) {
 
 // mockTaskManager is a test double for task.TaskManager.
 type mockTaskManager struct {
-	createTaskFn   func(req task.DeployRequest) (*db.DeployTask, error)
-	getStatusFn    func(taskID string) (*task.TaskStatus, error)
-	getLogsFn      func(taskID string) (string, error)
-	listRecordsFn  func(filter task.RecordFilter) ([]task.DeployRecord, int, error)
-	cancelTaskFn   func(taskID string) error
+	createTaskFn  func(req task.DeployRequest) (*db.DeployTask, error)
+	getStatusFn   func(taskID string) (*task.TaskStatus, error)
+	getLogsFn     func(taskID string) (string, error)
+	listRecordsFn func(filter task.RecordFilter) ([]task.DeployRecord, int, error)
+	cancelTaskFn  func(taskID string) error
 }
 
 func (m *mockTaskManager) CreateTask(req task.DeployRequest) (*db.DeployTask, error) {
@@ -103,6 +103,14 @@ func setupRouterWithTaskMgr(giteaClient gitea.GiteaClient, cfg *config.AppConfig
 	r := gin.New()
 	h := NewHandler(giteaClient, cfg, taskMgr)
 	h.RegisterRoutes(r)
+	return r
+}
+
+func setupRouterWithBasePath(giteaClient gitea.GiteaClient, cfg *config.AppConfig, basePath string) *gin.Engine {
+	gin.SetMode(gin.TestMode)
+	r := gin.New()
+	h := NewHandler(giteaClient, cfg, nil)
+	h.RegisterRoutesWithBasePath(r, basePath)
 	return r
 }
 
@@ -158,6 +166,22 @@ func TestHealthEndpoint(t *testing.T) {
 
 	w := httptest.NewRecorder()
 	req, _ := http.NewRequest(http.MethodGet, "/api/health", nil)
+	r.ServeHTTP(w, req)
+
+	assert.Equal(t, http.StatusOK, w.Code)
+
+	var resp map[string]interface{}
+	err := json.Unmarshal(w.Body.Bytes(), &resp)
+	require.NoError(t, err)
+	assert.Equal(t, float64(0), resp["code"])
+	assert.Equal(t, "ok", resp["data"])
+}
+
+func TestHealthEndpointWithBasePath(t *testing.T) {
+	r := setupRouterWithBasePath(&mockGiteaClient{}, testConfig(), "/deploy")
+
+	w := httptest.NewRecorder()
+	req, _ := http.NewRequest(http.MethodGet, "/deploy/api/health", nil)
 	r.ServeHTTP(w, req)
 
 	assert.Equal(t, http.StatusOK, w.Code)
@@ -242,8 +266,8 @@ func TestListBranches_Success(t *testing.T) {
 	assert.Len(t, data, 2)
 
 	first := data[0].(map[string]interface{})
-	assert.Equal(t, "main", first["name"])
-	assert.Equal(t, "abc123", first["commit_id"])
+	assert.Equal(t, "develop", first["name"])
+	assert.Equal(t, "def456", first["commit_id"])
 }
 
 func TestListBranches_GiteaError(t *testing.T) {

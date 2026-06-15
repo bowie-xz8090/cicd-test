@@ -10,6 +10,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 
@@ -167,6 +168,24 @@ func deployCtxErrMsg(ctx context.Context, err error) string {
 	return ""
 }
 
+func safeWorkDirSegment(value string) string {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return "_"
+	}
+	return strings.NewReplacer(
+		"/", "_",
+		"\\", "_",
+		":", "_",
+		"*", "_",
+		"?", "_",
+		"\"", "_",
+		"<", "_",
+		">", "_",
+		"|", "_",
+	).Replace(value)
+}
+
 // getConfig returns the latest config, preferring the Manager if available.
 func (m *taskManager) getConfig() *config.AppConfig {
 	if m.cfgManager != nil {
@@ -262,9 +281,16 @@ func (m *taskManager) executeDeployment(ctx context.Context, task *db.DeployTask
 	giteaCfg := cfg.GetGiteaConfig()
 	repoURL := giteaCfg.URL + "/" + task.ProjectOwner + "/" + task.ProjectName + ".git"
 
-	// Keep environments in separate working copies so concurrent builds of the
-	// same repository for different environments do not clean or overwrite each other.
-	workDir := filepath.Join(cfg.Server.Workspace, task.ProjectOwner, task.ProjectName, task.Environment)
+	// Keep environment, sub-project, and branch/tag in separate working copies so
+	// concurrent monorepo builds do not clean or overwrite each other's artifacts.
+	workDir := filepath.Join(
+		cfg.Server.Workspace,
+		task.ProjectOwner,
+		task.ProjectName,
+		safeWorkDirSegment(task.Environment),
+		safeWorkDirSegment(task.SubProject),
+		safeWorkDirSegment(task.Branch),
+	)
 
 	// Clone or pull the code.
 	if err := m.builder.CloneOrPull(repoURL, task.Branch, workDir); err != nil {
