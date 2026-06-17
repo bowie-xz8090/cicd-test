@@ -95,6 +95,16 @@ func TestCloneOrPull_InvalidRepo(t *testing.T) {
 	assert.Contains(t, err.Error(), "git clone failed")
 }
 
+func TestSanitizeGitOutputMasksCredentials(t *testing.T) {
+	repoURL := "http://deploy-user:secret-token@gitea.example.com/admin/repo.git"
+	output := "fatal: Authentication failed for 'http://deploy-user:secret-token@gitea.example.com/admin/repo.git'"
+
+	sanitized := sanitizeGitOutput(output, repoURL)
+
+	assert.NotContains(t, sanitized, "secret-token")
+	assert.Contains(t, sanitized, "http://%2A%2A%2A:%2A%2A%2A@gitea.example.com/admin/repo.git")
+}
+
 func TestCloneOrPull_InvalidBranchOnPull(t *testing.T) {
 	bareRepo := initBareRepo(t, "main")
 	workDir := filepath.Join(t.TempDir(), "branch-test")

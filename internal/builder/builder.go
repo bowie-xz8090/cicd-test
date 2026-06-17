@@ -3,8 +3,10 @@ package builder
 import (
 	"bytes"
 	"fmt"
+	"net/url"
 	"os"
 	"os/exec"
+	"strings"
 )
 
 // Builder defines the interface for code fetching and project building.
@@ -34,7 +36,7 @@ func (b *builder) CloneOrPull(repoURL, branch, workDir string) error {
 		return b.cloneRepo(repoURL, branch, workDir)
 	}
 	// Directory exists — fetch, checkout, and pull.
-	return b.pullRepo(branch, workDir)
+	return b.pullRepo(repoURL, branch, workDir)
 }
 
 // cloneRepo runs git clone for the specified branch into workDir.
@@ -44,13 +46,23 @@ func (b *builder) cloneRepo(repoURL, branch, workDir string) error {
 	cmd.Stderr = &stderr
 
 	if err := cmd.Run(); err != nil {
-		return fmt.Errorf("git clone failed: %s: %w", stderr.String(), err)
+		return fmt.Errorf("git clone failed: %s: %w", sanitizeGitOutput(stderr.String(), repoURL), err)
 	}
 	return nil
 }
 
 // pullRepo fetches, checks out, and pulls the specified ref (branch or tag) inside workDir.
-func (b *builder) pullRepo(branch, workDir string) error {
+func (b *builder) pullRepo(repoURL, branch, workDir string) error {
+	if repoURL != "" {
+		remoteCmd := exec.Command("git", "remote", "set-url", "origin", repoURL)
+		remoteCmd.Dir = workDir
+		var remoteStderr bytes.Buffer
+		remoteCmd.Stderr = &remoteStderr
+		if err := remoteCmd.Run(); err != nil {
+			return fmt.Errorf("git remote set-url failed: %s: %w", sanitizeGitOutput(remoteStderr.String(), repoURL), err)
+		}
+	}
+
 	// Ensure the remote fetch refspec covers all branches and tags.
 	configCmd := exec.Command("git", "config", "remote.origin.fetch", "+refs/heads/*:refs/remotes/origin/*")
 	configCmd.Dir = workDir
@@ -67,7 +79,7 @@ func (b *builder) pullRepo(branch, workDir string) error {
 	var fetchStderr bytes.Buffer
 	fetchCmd.Stderr = &fetchStderr
 	if err := fetchCmd.Run(); err != nil {
-		return fmt.Errorf("git fetch failed: %s: %w", fetchStderr.String(), err)
+		return fmt.Errorf("git fetch failed: %s: %w", sanitizeGitOutput(fetchStderr.String(), repoURL), err)
 	}
 
 	// Try checkout as branch first: git checkout -f -B <branch> origin/<branch>
@@ -82,7 +94,7 @@ func (b *builder) pullRepo(branch, workDir string) error {
 		var tagStderr bytes.Buffer
 		tagCmd.Stderr = &tagStderr
 		if tagErr := tagCmd.Run(); tagErr != nil {
-			return fmt.Errorf("git checkout failed (not a branch or tag): %s: %w", tagStderr.String(), tagErr)
+			return fmt.Errorf("git checkout failed (not a branch or tag): %s: %w", sanitizeGitOutput(tagStderr.String(), repoURL), tagErr)
 		}
 		// Tag checkout succeeded, no pull needed for tags
 		return nil
@@ -94,10 +106,40 @@ func (b *builder) pullRepo(branch, workDir string) error {
 	var pullStderr bytes.Buffer
 	pullCmd.Stderr = &pullStderr
 	if err := pullCmd.Run(); err != nil {
-		return fmt.Errorf("git pull failed: %s: %w", pullStderr.String(), err)
+		return fmt.Errorf("git pull failed: %s: %w", sanitizeGitOutput(pullStderr.String(), repoURL), err)
 	}
 
 	return nil
+}
+
+func sanitizeGitOutput(output, repoURL string) string {
+	if repoURL == "" || output == "" {
+		return output
+	}
+
+	sanitizedURL := sanitizeURL(repoURL)
+	output = strings.ReplaceAll(output, repoURL, sanitizedURL)
+
+	parsed, err := url.Parse(repoURL)
+	if err != nil || parsed.User == nil {
+		return output
+	}
+	if password, ok := parsed.User.Password(); ok && password != "" {
+		output = strings.ReplaceAll(output, password, "***")
+	}
+	if username := parsed.User.Username(); username != "" {
+		output = strings.ReplaceAll(output, username+":"+"***", "***:***")
+	}
+	return output
+}
+
+func sanitizeURL(rawURL string) string {
+	parsed, err := url.Parse(rawURL)
+	if err != nil || parsed.User == nil {
+		return rawURL
+	}
+	parsed.User = url.UserPassword("***", "***")
+	return parsed.String()
 }
 
 // Build executes the build command in workDir with BUILD_ENV set to the given env value.

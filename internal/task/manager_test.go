@@ -2,8 +2,10 @@ package task
 
 import (
 	"os"
+	"strings"
 	"testing"
 
+	"auto-deploy-platform/internal/config"
 	"auto-deploy-platform/internal/db"
 
 	"github.com/stretchr/testify/assert"
@@ -41,6 +43,26 @@ func validRequest() DeployRequest {
 	}
 }
 
+func TestBuildRepoURLUsesGiteaCredentials(t *testing.T) {
+	repoURL := buildRepoURL(config.GiteaConfig{
+		URL:      "http://gitea.example.com",
+		Username: "deploy-user",
+		Token:    "token with spaces",
+	}, "admin", "cde-monorepo")
+
+	assert.True(t, strings.HasPrefix(repoURL, "http://deploy-user:token%20with%20spaces@gitea.example.com/"))
+	assert.True(t, strings.HasSuffix(repoURL, "/admin/cde-monorepo.git"))
+}
+
+func TestBuildRepoURLFallsBackToOwnerAsUsername(t *testing.T) {
+	repoURL := buildRepoURL(config.GiteaConfig{
+		URL:   "http://gitea.example.com/",
+		Token: "token",
+	}, "admin", "cde-monorepo")
+
+	assert.Equal(t, "http://admin:token@gitea.example.com/admin/cde-monorepo.git", repoURL)
+}
+
 func TestCreateTask_Success(t *testing.T) {
 	mgr, cleanup := setupTestDB(t)
 	defer cleanup()
@@ -65,9 +87,9 @@ func TestCreateTask_ValidationErrors(t *testing.T) {
 	defer cleanup()
 
 	tests := []struct {
-		name    string
-		req     DeployRequest
-		errMsg  string
+		name   string
+		req    DeployRequest
+		errMsg string
 	}{
 		{
 			name:   "empty project_owner",

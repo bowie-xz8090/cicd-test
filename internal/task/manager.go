@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -279,7 +280,7 @@ func (m *taskManager) executeDeployment(ctx context.Context, task *db.DeployTask
 
 	// Build repo URL from Gitea config.
 	giteaCfg := cfg.GetGiteaConfig()
-	repoURL := giteaCfg.URL + "/" + task.ProjectOwner + "/" + task.ProjectName + ".git"
+	repoURL := buildRepoURL(giteaCfg, task.ProjectOwner, task.ProjectName)
 
 	// Keep environment, sub-project, and branch/tag in separate working copies so
 	// concurrent monorepo builds do not clean or overwrite each other's artifacts.
@@ -433,6 +434,26 @@ func (m *taskManager) appendLog(taskID, stage, message string) {
 	newLogs += logLine
 
 	db.UpdateTaskLogs(m.database, taskID, newLogs)
+}
+
+func buildRepoURL(giteaCfg config.GiteaConfig, owner, repo string) string {
+	baseURL := strings.TrimRight(giteaCfg.URL, "/")
+	repoURL := baseURL + "/" + owner + "/" + repo + ".git"
+	if strings.TrimSpace(giteaCfg.Token) == "" {
+		return repoURL
+	}
+
+	parsed, err := url.Parse(repoURL)
+	if err != nil || (parsed.Scheme != "http" && parsed.Scheme != "https") {
+		return repoURL
+	}
+
+	username := strings.TrimSpace(giteaCfg.Username)
+	if username == "" {
+		username = owner
+	}
+	parsed.User = url.UserPassword(username, giteaCfg.Token)
+	return parsed.String()
 }
 
 // failTask sets the task status to "failed" and records the error message.

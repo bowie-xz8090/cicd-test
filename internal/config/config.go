@@ -28,8 +28,9 @@ type ServerAppConfig struct {
 
 // GiteaConfig holds Gitea connection information.
 type GiteaConfig struct {
-	URL   string `yaml:"url" json:"url"`
-	Token string `yaml:"token" json:"token"`
+	URL      string `yaml:"url" json:"url"`
+	Username string `yaml:"username" json:"username"`
+	Token    string `yaml:"token" json:"token"`
 }
 
 // ServerConfig holds SSH connection details for a target server.

@@ -16,6 +16,7 @@ server:
 
 gitea:
   url: "http://gitea.example.com"
+  username: "git-user"
   token: "test-token"
 
 servers:
@@ -69,6 +70,7 @@ func TestLoad_ValidConfig(t *testing.T) {
 	assert.Equal(t, 9090, cfg.Server.Port)
 	assert.Equal(t, "/tmp/workspace", cfg.Server.Workspace)
 	assert.Equal(t, "http://gitea.example.com", cfg.Gitea.URL)
+	assert.Equal(t, "git-user", cfg.Gitea.Username)
 	assert.Equal(t, "test-token", cfg.Gitea.Token)
 	assert.Len(t, cfg.Environments, 2)
 	assert.Len(t, cfg.Projects, 1)

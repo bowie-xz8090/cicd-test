@@ -8,6 +8,7 @@ webhook_secret: "change-me-to-webhook-secret"
 
 gitea:
   url: "http://gitea.example.com"
+  username: "your-username"
   token: "your-access-token"
 
 # 服务器集中定义，多个项目可以引用同一个 server key，避免重复配置
