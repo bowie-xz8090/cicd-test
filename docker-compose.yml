@@ -1,21 +1,23 @@
 services:
   auto-deploy:
-    build: .
+    build:
+      context: .
+      dockerfile: Dockerfile
     image: auto-deploy-platform:latest
     container_name: auto-deploy-platform
     ports:
-      - "127.0.0.1:82:82"
+      - "82:82"
     volumes:
       # 配置文件挂载（可读写，支持动态修改）
       - ./config.yaml:/app/config.yaml
       # 数据持久化（SQLite 数据库）
-      - deploy-data:/app/data
+      - ./deploy-data:/app/data
       # 代码工作目录持久化（避免每次重新克隆）
-      - deploy-workspace:/app/workspace
+      - ./deploy-workspace:/app/workspace
       # Maven 本地仓库持久化（避免每次重新下载依赖）
-      - maven-repo:/root/.m2/repository
+      - ./maven-repo:/root/.m2/repository
       # pnpm 缓存持久化
-      - pnpm-store:/root/.local/share/pnpm/store
+      - ./pnpm-store:/root/.local/share/pnpm/store
     environment:
       - GIN_MODE=release
       - TZ=Asia/Shanghai
@@ -24,11 +26,6 @@ services:
       - BASE_PATH=/
       - MAVEN_OPTS=-Xmx512m -XX:+UseParallelGC
       - NODE_OPTIONS=--max-old-space-size=2048
-    deploy:
-      resources:
-        limits:
-          memory: 3G
-          cpus: "4"
     restart: unless-stopped
     healthcheck:
       test: ["CMD-SHELL", "wget --no-verbose --tries=1 --spider \"http://localhost:82$${BASE_PATH:-}/api/health\""]
@@ -36,9 +33,3 @@ services:
       timeout: 5s
       retries: 3
       start_period: 10s
-
-volumes:
-  deploy-data:
-  deploy-workspace:
-  maven-repo:
-  pnpm-store:

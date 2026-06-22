@@ -84,8 +84,62 @@ export interface RecordFilter {
 }
 
 export interface RecordListResponse {
-  total: number
-  records: DeployRecord[]
+	total: number
+	records: DeployRecord[]
+}
+
+export interface EditableConfig {
+  environments: Record<string, EditableEnvironment>
+  projects: ProjectBuildConfig
+  servers: string[]
+}
+
+export interface ArtifactConfig {
+  build_output: string
+  deploy_script: string
+  rename_to: string
+}
+
+export interface SubProjectEnvironmentConfig {
+  build_cmd: string
+  build_output: string
+  deploy_script: string
+  rename_to: string
+  artifacts: ArtifactConfig[]
+  server: string
+  disabled: boolean | null
+}
+
+export interface SubProjectBuildConfig {
+  label: string
+  env_overrides: Record<string, SubProjectEnvironmentConfig>
+}
+
+export interface ProjectBuildConfigItem {
+  label: string
+  sub_projects: Record<string, SubProjectBuildConfig>
+}
+
+export type ProjectBuildConfig = Record<string, ProjectBuildConfigItem>
+
+export interface EnvironmentExtraLink {
+  label: string
+  url: string
+}
+
+export interface EditableEnvironment {
+  label: string
+  disabled: boolean
+  links: {
+    user_url: string
+    admin_url: string
+    extra: EnvironmentExtraLink[]
+  }
+}
+
+export interface EnvironmentAccessConfig {
+  disabled: boolean
+  links: EditableEnvironment['links']
 }
 
 // --- API Error ---
@@ -187,6 +241,44 @@ export async function fetchRecords(
   return api.get('/api/deploy/records', {
     params: filter,
   }) as unknown as RecordListResponse
+}
+
+export async function clearDeployHistory(): Promise<{ deleted: number }> {
+  return api.delete('/api/deploy/records') as unknown as { deleted: number }
+}
+
+function adminHeaders(adminToken: string) {
+  return { Authorization: `Bearer ${adminToken}` }
+}
+
+export async function fetchEditableConfig(adminToken: string): Promise<EditableConfig> {
+  return api.get('/api/config/editor', { headers: adminHeaders(adminToken) }) as unknown as EditableConfig
+}
+
+export async function updateEditableConfig(
+  adminToken: string,
+  config: EditableConfig,
+): Promise<EditableConfig> {
+  return api.put('/api/config/editor', config, { headers: adminHeaders(adminToken) }) as unknown as EditableConfig
+}
+
+export async function updateProjectBuildConfig(
+  adminToken: string,
+  projects: ProjectBuildConfig,
+): Promise<ProjectBuildConfig> {
+  return api.put('/api/config/projects', projects, { headers: adminHeaders(adminToken) }) as unknown as ProjectBuildConfig
+}
+
+export async function updateEnvironmentAccess(
+  adminToken: string,
+  environment: string,
+  access: EnvironmentAccessConfig,
+): Promise<EnvironmentAccessConfig> {
+  return api.put(
+    `/api/config/environments/${encodeURIComponent(environment)}`,
+    access,
+    { headers: adminHeaders(adminToken) },
+  ) as unknown as EnvironmentAccessConfig
 }
 
 export async function cancelDeploy(taskId: string): Promise<{ message: string }> {

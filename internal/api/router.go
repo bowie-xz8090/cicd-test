@@ -1,6 +1,7 @@
 package api
 
 import (
+	"errors"
 	"net/http"
 	"sort"
 	"strings"
@@ -65,6 +66,7 @@ func (h *Handler) RegisterRoutesWithBasePath(r *gin.Engine, basePath string) {
 
 		// Deploy routes: register /deploy/records BEFORE /:id routes to avoid conflicts.
 		api.GET("/deploy/records", h.handleDeployRecords)
+		api.DELETE("/deploy/records", h.handleClearDeployHistory)
 		api.POST("/deploy", h.handleDeploy)
 		api.POST("/deploy/:id/cancel", h.handleDeployCancel)
 		api.GET("/deploy/:id/status", h.handleDeployStatus)
@@ -74,6 +76,10 @@ func (h *Handler) RegisterRoutesWithBasePath(r *gin.Engine, basePath string) {
 		configGroup := api.Group("/config")
 		configGroup.Use(h.adminAuthMiddleware())
 		{
+			configGroup.GET("/editor", h.handleGetEditableConfig)
+			configGroup.PUT("/editor", h.handleUpdateEditableConfig)
+			configGroup.PUT("/projects", h.handleUpdateProjects)
+			configGroup.PUT("/environments/:key", h.handleUpdateEnvironmentAccess)
 			configGroup.PUT("", h.handleUpdateConfig)
 			configGroup.POST("/reload", h.handleReloadConfig)
 		}
@@ -355,8 +361,16 @@ func (h *Handler) handleDeploy(c *gin.Context) {
 		return
 	}
 
-	// Validate deploy password if the environment has one configured
 	cfg := h.getLatestConfig()
+	if isDeploymentDisabled(cfg, req.ProjectName, req.SubProject, req.Environment) {
+		c.JSON(http.StatusForbidden, gin.H{
+			"code":    -1,
+			"message": "当前项目的该环境未开放部署",
+		})
+		return
+	}
+
+	// Validate deploy password if the environment has one configured.
 	if envCfg, ok := cfg.Environments[req.Environment]; ok {
 		if envCfg.Password != "" && req.DeployPassword != envCfg.Password {
 			c.JSON(http.StatusForbidden, gin.H{
@@ -384,6 +398,39 @@ func (h *Handler) handleDeploy(c *gin.Context) {
 			"created_at": deployTask.CreatedAt,
 		},
 	})
+}
+
+// isDeploymentDisabled resolves the effective deployment permission for a
+// project sub-project environment. A sub-project override takes precedence over
+// the top-level environment setting; missing environment override is disabled.
+func isDeploymentDisabled(cfg *config.AppConfig, projectName, subProjectName, environment string) bool {
+	if cfg == nil {
+		return true
+	}
+
+	environmentCfg, ok := cfg.Environments[environment]
+	if !ok {
+		return true
+	}
+	disabled := environmentCfg.Disabled
+
+	projectCfg, ok := cfg.Projects[projectName]
+	if !ok {
+		return true
+	}
+	subProjectCfg, ok := projectCfg.SubProjects[subProjectName]
+	if !ok {
+		return true
+	}
+	override, ok := subProjectCfg.EnvOverrides[environment]
+	if !ok {
+		return true
+	}
+	if override.Disabled != nil {
+		disabled = *override.Disabled
+	}
+
+	return disabled
 }
 
 // handleDeployStatus returns the current status of a deployment task.
@@ -484,6 +531,204 @@ func (h *Handler) handleDeployRecords(c *gin.Context) {
 		"data": gin.H{
 			"total":   total,
 			"records": records,
+		},
+	})
+}
+
+// handleClearDeployHistory removes deployment records and their stored logs,
+// then compacts SQLite to reclaim disk space.
+func (h *Handler) handleClearDeployHistory(c *gin.Context) {
+	deleted, err := h.taskManager.ClearDeployHistory()
+	if err != nil {
+		if errors.Is(err, task.ErrDeploymentsInProgress) {
+			c.JSON(http.StatusConflict, gin.H{
+				"code":    -1,
+				"message": "存在进行中的部署任务，暂时无法清空部署历史",
+			})
+			return
+		}
+		c.JSON(http.StatusInternalServerError, gin.H{
+			"code":    -1,
+			"message": "清空部署历史失败: " + err.Error(),
+		})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"code": 0,
+		"data": gin.H{"deleted": deleted},
+	})
+}
+
+// EditableConfig contains the configuration sections that can be safely edited
+// from the web UI. Connection credentials are intentionally excluded.
+type EditableConfig struct {
+	Environments map[string]config.EnvConfig     `json:"environments"`
+	Projects     map[string]config.ProjectConfig `json:"projects"`
+	Servers      []string                        `json:"servers"`
+}
+
+func editableConfig(cfg *config.AppConfig) EditableConfig {
+	servers := make([]string, 0, len(cfg.Servers))
+	for key := range cfg.Servers {
+		servers = append(servers, key)
+	}
+	sort.Strings(servers)
+	return EditableConfig{
+		Environments: cfg.Environments,
+		Projects:     cfg.Projects,
+		Servers:      servers,
+	}
+}
+
+// EnvironmentAccessConfig contains the environment fields managed by the UI.
+// The label and deploy password remain unchanged when access settings are saved.
+type EnvironmentAccessConfig struct {
+	Disabled bool            `json:"disabled"`
+	Links    config.EnvLinks `json:"links"`
+}
+
+// handleGetEditableConfig returns only the editable configuration sections.
+func (h *Handler) handleGetEditableConfig(c *gin.Context) {
+	cfg := h.getLatestConfig()
+	c.JSON(http.StatusOK, gin.H{"code": 0, "data": editableConfig(cfg)})
+}
+
+// handleUpdateEditableConfig merges edited environment and project settings
+// into the current configuration, then persists and hot-reloads it.
+func (h *Handler) handleUpdateEditableConfig(c *gin.Context) {
+	if h.cfgManager == nil {
+		c.JSON(http.StatusInternalServerError, gin.H{
+			"code":    -1,
+			"message": "配置管理器未初始化，不支持动态修改",
+		})
+		return
+	}
+
+	var editable EditableConfig
+	if err := c.ShouldBindJSON(&editable); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{
+			"code":    -1,
+			"message": "请求参数错误: " + err.Error(),
+		})
+		return
+	}
+	if len(editable.Environments) == 0 {
+		c.JSON(http.StatusBadRequest, gin.H{
+			"code":    -1,
+			"message": "至少需要保留一个环境配置",
+		})
+		return
+	}
+
+	updated := *h.cfgManager.Get()
+	updated.Environments = editable.Environments
+	updated.Projects = editable.Projects
+	if err := h.cfgManager.Update(&updated); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{
+			"code":    -1,
+			"message": "配置更新失败: " + err.Error(),
+		})
+		return
+	}
+
+	h.cfg = h.cfgManager.Get()
+	c.JSON(http.StatusOK, gin.H{"code": 0, "data": editableConfig(h.cfg)})
+}
+
+// handleUpdateProjects replaces only project build configuration, leaving
+// environment access settings and all credentials untouched.
+func (h *Handler) handleUpdateProjects(c *gin.Context) {
+	if h.cfgManager == nil {
+		c.JSON(http.StatusInternalServerError, gin.H{
+			"code":    -1,
+			"message": "配置管理器未初始化，不支持动态修改",
+		})
+		return
+	}
+
+	var projects map[string]config.ProjectConfig
+	if err := c.ShouldBindJSON(&projects); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{
+			"code":    -1,
+			"message": "请求参数错误: " + err.Error(),
+		})
+		return
+	}
+
+	updated := *h.cfgManager.Get()
+	updated.Projects = projects
+	if err := h.cfgManager.Update(&updated); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{
+			"code":    -1,
+			"message": "配置更新失败: " + err.Error(),
+		})
+		return
+	}
+
+	h.cfg = h.cfgManager.Get()
+	c.JSON(http.StatusOK, gin.H{
+		"code": 0,
+		"data": h.cfg.Projects,
+	})
+}
+
+// handleUpdateEnvironmentAccess updates only one standard environment's access
+// settings so editing it cannot overwrite other environment or project config.
+func (h *Handler) handleUpdateEnvironmentAccess(c *gin.Context) {
+	if h.cfgManager == nil {
+		c.JSON(http.StatusInternalServerError, gin.H{
+			"code":    -1,
+			"message": "配置管理器未初始化，不支持动态修改",
+		})
+		return
+	}
+
+	key := c.Param("key")
+	if key != "dev" && key != "sit" && key != "prod" {
+		c.JSON(http.StatusBadRequest, gin.H{
+			"code":    -1,
+			"message": "仅支持修改开发、测试和生产环境访问配置",
+		})
+		return
+	}
+
+	var access EnvironmentAccessConfig
+	if err := c.ShouldBindJSON(&access); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{
+			"code":    -1,
+			"message": "请求参数错误: " + err.Error(),
+		})
+		return
+	}
+
+	updated := *h.cfgManager.Get()
+	environment, ok := updated.Environments[key]
+	if !ok {
+		c.JSON(http.StatusBadRequest, gin.H{
+			"code":    -1,
+			"message": "环境配置不存在: " + key,
+		})
+		return
+	}
+	environment.Disabled = access.Disabled
+	environment.Links = access.Links
+	updated.Environments[key] = environment
+
+	if err := h.cfgManager.Update(&updated); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{
+			"code":    -1,
+			"message": "配置更新失败: " + err.Error(),
+		})
+		return
+	}
+
+	h.cfg = h.cfgManager.Get()
+	c.JSON(http.StatusOK, gin.H{
+		"code": 0,
+		"data": EnvironmentAccessConfig{
+			Disabled: h.cfg.Environments[key].Disabled,
+			Links:    h.cfg.Environments[key].Links,
 		},
 	})
 }

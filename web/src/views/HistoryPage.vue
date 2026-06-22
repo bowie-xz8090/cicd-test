@@ -33,6 +33,9 @@
       <button class="refresh-btn" @click="handleRefresh" :disabled="loading">
         刷新
       </button>
+      <button class="clear-btn" @click="handleClear" :disabled="loading || total === 0">
+        &#28165;&#31354;
+      </button>
     </div>
 
     <!-- Error alert -->
@@ -119,7 +122,7 @@
 
 <script setup lang="ts">
 import { ref, reactive, computed, onMounted, onUnmounted } from 'vue'
-import { fetchRecords, fetchEnvironments, cancelDeploy, type DeployRecord, type Environment } from '../api/index'
+import { clearDeployHistory, fetchRecords, fetchEnvironments, cancelDeploy, type DeployRecord, type Environment } from '../api/index'
 import LogViewer from '../components/LogViewer.vue'
 
 // --- Reactive state ---
@@ -208,6 +211,25 @@ function handleSearch() {
   filter.page = 1
   selectedRecordId.value = null
   loadRecords()
+}
+
+async function handleClear() {
+  if (!confirm('\u662f\u5426\u786e\u8ba4\u6e05\u7a7a\u90e8\u7f72\u5386\u53f2\uff1f')) return
+
+  loading.value = true
+  errorMessage.value = ''
+  try {
+    await clearDeployHistory()
+    selectedRecordId.value = null
+    filter.page = 1
+    records.value = []
+    total.value = 0
+  } catch (err: unknown) {
+    const message = err instanceof Error ? err.message : '\u672a\u77e5\u9519\u8bef'
+    errorMessage.value = `\u6e05\u7a7a\u90e8\u7f72\u5386\u53f2\u5931\u8d25\uff1a${message}`
+  } finally {
+    loading.value = false
+  }
 }
 
 function handleRefresh() {
@@ -380,9 +402,32 @@ h1 {
 }
 
 .refresh-btn:disabled {
-  color: #93c5fd;
-  border-color: #93c5fd;
-  cursor: not-allowed;
+	color: #93c5fd;
+	border-color: #93c5fd;
+	cursor: not-allowed;
+}
+
+.clear-btn {
+	margin-left: auto;
+	padding: 8px 20px;
+	background: #fff;
+	color: #dc2626;
+	border: 1px solid #dc2626;
+	border-radius: 6px;
+	font-size: 0.9rem;
+	font-weight: 600;
+	cursor: pointer;
+	transition: background 0.15s, color 0.15s;
+}
+
+.clear-btn:hover:not(:disabled) {
+	background: #fef2f2;
+}
+
+.clear-btn:disabled {
+	color: #fca5a5;
+	border-color: #fca5a5;
+	cursor: not-allowed;
 }
 
 /* Error alert */

@@ -350,3 +350,39 @@ func ListRecords(db *sql.DB, filter RecordFilter) ([]DeployTask, int, error) {
 
 	return tasks, total, nil
 }
+
+// ClearDeployHistory removes deployment records and compacts the SQLite database
+// so the space previously occupied by logs is returned to disk.
+func ClearDeployHistory(db *sql.DB) (int, error) {
+	result, err := db.Exec(`DELETE FROM deploy_tasks`)
+	if err != nil {
+		return 0, fmt.Errorf("failed to delete deploy history: %w", err)
+	}
+
+	deleted, err := result.RowsAffected()
+	if err != nil {
+		return 0, fmt.Errorf("failed to get deleted record count: %w", err)
+	}
+
+	// Truncate the WAL file first, then compact the main database file.
+	if _, err := db.Exec(`PRAGMA wal_checkpoint(TRUNCATE)`); err != nil {
+		return 0, fmt.Errorf("failed to checkpoint deploy database: %w", err)
+	}
+	if _, err := db.Exec(`VACUUM`); err != nil {
+		return 0, fmt.Errorf("failed to compact deploy database: %w", err)
+	}
+
+	return int(deleted), nil
+}
+
+// HasActiveTasks reports whether deployment records are still being processed.
+func HasActiveTasks(db *sql.DB) (bool, error) {
+	var count int
+	if err := db.QueryRow(`
+		SELECT COUNT(*) FROM deploy_tasks
+		WHERE status IN ('pending', 'cloning', 'building', 'deploying')
+	`).Scan(&count); err != nil {
+		return false, fmt.Errorf("failed to check active deployment tasks: %w", err)
+	}
+	return count > 0, nil
+}

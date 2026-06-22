@@ -28,6 +28,8 @@ const (
 	deployTimeout = 5 * time.Minute
 )
 
+var ErrDeploymentsInProgress = errors.New("deployments are still in progress")
+
 // DeployRequest represents a request to create a new deployment task.
 type DeployRequest struct {
 	ProjectOwner   string `json:"project_owner"`
@@ -79,6 +81,7 @@ type TaskManager interface {
 	GetTaskStatus(taskID string) (*TaskStatus, error)
 	GetTaskLogs(taskID string) (string, error)
 	ListRecords(filter RecordFilter) ([]DeployRecord, int, error)
+	ClearDeployHistory() (int, error)
 	CancelTask(taskID string) error
 }
 
@@ -126,6 +129,7 @@ type taskManager struct {
 	cfg        *config.AppConfig
 	cfgManager *config.Manager
 	cancelMap  sync.Map // taskID -> context.CancelFunc
+	historyMu  sync.Mutex
 }
 
 // NewTaskManager creates a new TaskManager instance.
@@ -233,7 +237,10 @@ func (m *taskManager) CreateTask(req DeployRequest) (*db.DeployTask, error) {
 		FinishedAt:   nil,
 	}
 
-	if err := db.CreateTask(m.database, task); err != nil {
+	m.historyMu.Lock()
+	err := db.CreateTask(m.database, task)
+	m.historyMu.Unlock()
+	if err != nil {
 		return nil, fmt.Errorf("failed to create task: %w", err)
 	}
 
@@ -562,6 +569,23 @@ func (m *taskManager) ListRecords(filter RecordFilter) ([]DeployRecord, int, err
 	}
 
 	return records, total, nil
+}
+
+// ClearDeployHistory removes deployment records and their stored logs, then
+// compacts SQLite. Active tasks are kept intact to avoid orphaning them.
+func (m *taskManager) ClearDeployHistory() (int, error) {
+	m.historyMu.Lock()
+	defer m.historyMu.Unlock()
+
+	hasActive, err := db.HasActiveTasks(m.database)
+	if err != nil {
+		return 0, err
+	}
+	if hasActive {
+		return 0, ErrDeploymentsInProgress
+	}
+
+	return db.ClearDeployHistory(m.database)
 }
 
 // prepareArtifact checks if the artifact path is a directory or file.

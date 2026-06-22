@@ -377,3 +377,34 @@ func TestListRecords_DefaultPagination(t *testing.T) {
 	assert.Equal(t, 1, total)
 	assert.Len(t, records, 1)
 }
+
+func TestClearDeployHistory(t *testing.T) {
+	db := setupTestDB(t)
+	task := newTestTask()
+	task.Status = "success"
+	task.Logs = "large deployment log"
+	require.NoError(t, CreateTask(db, task))
+
+	deleted, err := ClearDeployHistory(db)
+	require.NoError(t, err)
+	assert.Equal(t, 1, deleted)
+
+	_, total, err := ListRecords(db, RecordFilter{})
+	require.NoError(t, err)
+	assert.Zero(t, total)
+}
+
+func TestHasActiveTasks(t *testing.T) {
+	db := setupTestDB(t)
+	task := newTestTask()
+	require.NoError(t, CreateTask(db, task))
+
+	hasActive, err := HasActiveTasks(db)
+	require.NoError(t, err)
+	assert.True(t, hasActive)
+
+	require.NoError(t, UpdateTaskStatus(db, task.ID, "success"))
+	hasActive, err = HasActiveTasks(db)
+	require.NoError(t, err)
+	assert.False(t, hasActive)
+}

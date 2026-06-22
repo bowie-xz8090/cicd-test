@@ -52,11 +52,12 @@ func (m *mockGiteaClient) ListTags(owner, repo string) ([]gitea.Tag, error) {
 
 // mockTaskManager is a test double for task.TaskManager.
 type mockTaskManager struct {
-	createTaskFn  func(req task.DeployRequest) (*db.DeployTask, error)
-	getStatusFn   func(taskID string) (*task.TaskStatus, error)
-	getLogsFn     func(taskID string) (string, error)
-	listRecordsFn func(filter task.RecordFilter) ([]task.DeployRecord, int, error)
-	cancelTaskFn  func(taskID string) error
+	createTaskFn   func(req task.DeployRequest) (*db.DeployTask, error)
+	getStatusFn    func(taskID string) (*task.TaskStatus, error)
+	getLogsFn      func(taskID string) (string, error)
+	listRecordsFn  func(filter task.RecordFilter) ([]task.DeployRecord, int, error)
+	clearHistoryFn func() (int, error)
+	cancelTaskFn   func(taskID string) error
 }
 
 func (m *mockTaskManager) CreateTask(req task.DeployRequest) (*db.DeployTask, error) {
@@ -87,6 +88,13 @@ func (m *mockTaskManager) ListRecords(filter task.RecordFilter) ([]task.DeployRe
 	return nil, 0, fmt.Errorf("not implemented")
 }
 
+func (m *mockTaskManager) ClearDeployHistory() (int, error) {
+	if m.clearHistoryFn != nil {
+		return m.clearHistoryFn()
+	}
+	return 0, fmt.Errorf("not implemented")
+}
+
 func (m *mockTaskManager) CancelTask(taskID string) error {
 	if m.cancelTaskFn != nil {
 		return m.cancelTaskFn(taskID)
@@ -112,6 +120,44 @@ func setupRouterWithBasePath(giteaClient gitea.GiteaClient, cfg *config.AppConfi
 	h := NewHandler(giteaClient, cfg, nil)
 	h.RegisterRoutesWithBasePath(r, basePath)
 	return r
+}
+
+func TestHandleClearDeployHistory(t *testing.T) {
+	cleared := false
+	taskMgr := &mockTaskManager{
+		clearHistoryFn: func() (int, error) {
+			cleared = true
+			return 3, nil
+		},
+	}
+	r := setupRouterWithTaskMgr(&mockGiteaClient{}, testConfig(), taskMgr)
+	req := httptest.NewRequest(http.MethodDelete, "/api/deploy/records", nil)
+	w := httptest.NewRecorder()
+
+	r.ServeHTTP(w, req)
+
+	require.True(t, cleared)
+	assert.Equal(t, http.StatusOK, w.Code)
+	var resp map[string]interface{}
+	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &resp))
+	assert.Equal(t, float64(0), resp["code"])
+	assert.Equal(t, float64(3), resp["data"].(map[string]interface{})["deleted"])
+}
+
+func TestHandleClearDeployHistory_RejectsActiveTasks(t *testing.T) {
+	taskMgr := &mockTaskManager{
+		clearHistoryFn: func() (int, error) {
+			return 0, task.ErrDeploymentsInProgress
+		},
+	}
+	r := setupRouterWithTaskMgr(&mockGiteaClient{}, testConfig(), taskMgr)
+	req := httptest.NewRequest(http.MethodDelete, "/api/deploy/records", nil)
+	w := httptest.NewRecorder()
+
+	r.ServeHTTP(w, req)
+
+	assert.Equal(t, http.StatusConflict, w.Code)
+	assert.Contains(t, w.Body.String(), "进行中的部署任务")
 }
 
 func testConfig() *config.AppConfig {
@@ -401,7 +447,7 @@ func TestHandleDeploy_Success(t *testing.T) {
 	}
 	r := setupRouterWithTaskMgr(&mockGiteaClient{}, testConfig(), taskMgr)
 
-	body := `{"project_owner":"org","project_name":"my-app","branch":"main","environment":"dev"}`
+	body := `{"project_owner":"org","project_name":"project-a","sub_project":"default","branch":"main","environment":"dev"}`
 	w := httptest.NewRecorder()
 	req, _ := http.NewRequest(http.MethodPost, "/api/deploy", bytes.NewBufferString(body))
 	req.Header.Set("Content-Type", "application/json")
@@ -447,7 +493,7 @@ func TestHandleDeploy_ValidationError(t *testing.T) {
 	}
 	r := setupRouterWithTaskMgr(&mockGiteaClient{}, testConfig(), taskMgr)
 
-	body := `{"project_owner":"","project_name":"my-app","branch":"main","environment":"dev"}`
+	body := `{"project_owner":"","project_name":"project-a","sub_project":"default","branch":"main","environment":"dev"}`
 	w := httptest.NewRecorder()
 	req, _ := http.NewRequest(http.MethodPost, "/api/deploy", bytes.NewBufferString(body))
 	req.Header.Set("Content-Type", "application/json")
@@ -460,6 +506,31 @@ func TestHandleDeploy_ValidationError(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, float64(-1), resp["code"])
 	assert.Contains(t, resp["message"], "project_owner must not be empty")
+}
+
+func TestHandleDeploy_RejectsDisabledSubProjectEnvironment(t *testing.T) {
+	cfg := testConfig()
+	disabled := true
+	cfg.Projects["project-a"].SubProjects["default"].EnvOverrides["dev"] = config.SubProjectEnvOverride{
+		Server:   "dev-server",
+		Disabled: &disabled,
+	}
+	taskMgr := &mockTaskManager{
+		createTaskFn: func(req task.DeployRequest) (*db.DeployTask, error) {
+			t.Fatal("disabled environment must not create a deployment task")
+			return nil, nil
+		},
+	}
+	r := setupRouterWithTaskMgr(&mockGiteaClient{}, cfg, taskMgr)
+
+	body := `{"project_owner":"org","project_name":"project-a","sub_project":"default","branch":"main","environment":"dev"}`
+	w := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/api/deploy", bytes.NewBufferString(body))
+	req.Header.Set("Content-Type", "application/json")
+	r.ServeHTTP(w, req)
+
+	assert.Equal(t, http.StatusForbidden, w.Code)
+	assert.Contains(t, w.Body.String(), "未开放部署")
 }
 
 func TestHandleDeployStatus_Success(t *testing.T) {
