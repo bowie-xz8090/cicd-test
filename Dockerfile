@@ -44,7 +44,9 @@ RUN apk add --no-cache \
     bash curl tar
 
 # 安装 pnpm
-RUN npm config set registry https://registry.npmmirror.com && npm install -g pnpm
+RUN npm config set registry https://registry.npmmirror.com && \
+    npm install -g pnpm && \
+    pnpm config set store-dir /root/.local/share/pnpm/store
 
 # 配置 Maven 镜像加速
 RUN mkdir -p /root/.m2 && \

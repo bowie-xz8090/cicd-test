@@ -72,6 +72,7 @@ type ProjectConfig struct {
 // SubProjectConfig holds configuration for a sub-project (deployment target).
 type SubProjectConfig struct {
 	Label        string                           `yaml:"label" json:"label"`
+	BuildType    string                           `yaml:"build_type" json:"build_type"`
 	EnvOverrides map[string]SubProjectEnvOverride `yaml:"env_overrides" json:"env_overrides"`
 }
 

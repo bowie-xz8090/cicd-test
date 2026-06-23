@@ -63,6 +63,34 @@ func TestBuildRepoURLFallsBackToOwnerAsUsername(t *testing.T) {
 	assert.Equal(t, "http://admin:token@gitea.example.com/admin/cde-monorepo.git", repoURL)
 }
 
+func TestResolveBuildType(t *testing.T) {
+	tests := []struct {
+		name       string
+		configured string
+		command    string
+		want       string
+		wantErr    bool
+	}{
+		{name: "explicit frontend", configured: "frontend", command: "mvn package", want: frontendBuild},
+		{name: "explicit backend", configured: "backend", command: "pnpm build", want: backendBuild},
+		{name: "infer pnpm", command: "pnpm install && pnpm build", want: frontendBuild},
+		{name: "infer maven", command: "mvn clean package", want: backendBuild},
+		{name: "invalid type", configured: "worker", wantErr: true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := resolveBuildType(tt.configured, tt.command)
+			if tt.wantErr {
+				assert.Error(t, err)
+				return
+			}
+			require.NoError(t, err)
+			assert.Equal(t, tt.want, got)
+		})
+	}
+}
+
 func TestCreateTask_Success(t *testing.T) {
 	mgr, cleanup := setupTestDB(t)
 	defer cleanup()

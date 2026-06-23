@@ -24,3 +24,11 @@ web/dist/
 # OS
 .DS_Store
 Thumbs.db
+/deploy-data/
+/deploy-workspace/
+/docker/
+/maven-repo/
+/pnpm-store/
+/auto-deploy-platform.tar
+/deploy-workspace/admin/cde-monorepo/dev/mult-plus-ui/develop/apps/cde-plus-ui/plus.tar.gz
+/deploy-workspace/admin/cde-monorepo/dev/mult-plus-ui/develop/apps/cde-plus-ui/plus.tar.gz

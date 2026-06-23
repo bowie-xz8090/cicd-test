@@ -165,3 +165,24 @@ func TestBuild_InvalidWorkDir(t *testing.T) {
 	_, err := b.Build("/nonexistent-dir-xyz", "echo hello", "dev")
 	require.Error(t, err)
 }
+
+func TestCleanWorkDir_RemovesGeneratedFiles(t *testing.T) {
+	bareRepo := initBareRepo(t, "main")
+	workDir := filepath.Join(t.TempDir(), "clean-target")
+	b := NewBuilder()
+	require.NoError(t, b.CloneOrPull(bareRepo, "main", workDir))
+
+	require.NoError(t, os.MkdirAll(filepath.Join(workDir, "node_modules"), 0755))
+	require.NoError(t, os.WriteFile(filepath.Join(workDir, "node_modules", "package.js"), []byte("generated"), 0644))
+	require.NoError(t, os.WriteFile(filepath.Join(workDir, "artifact.tar.gz"), []byte("generated"), 0644))
+
+	require.NoError(t, b.CleanWorkDir(workDir))
+	_, err := os.Stat(filepath.Join(workDir, "node_modules"))
+	assert.True(t, os.IsNotExist(err))
+	_, err = os.Stat(filepath.Join(workDir, "artifact.tar.gz"))
+	assert.True(t, os.IsNotExist(err))
+	_, err = os.Stat(filepath.Join(workDir, "README.md"))
+	assert.NoError(t, err)
+	_, err = os.Stat(filepath.Join(workDir, ".git"))
+	assert.NoError(t, err)
+}

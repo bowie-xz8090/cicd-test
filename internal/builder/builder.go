@@ -18,6 +18,7 @@ type Builder interface {
 	// Build executes the given build command in workDir with BUILD_ENV set to env.
 	// Returns the combined stdout/stderr output on success, or an error with output on failure.
 	Build(workDir string, buildCmd string, env string) (string, error)
+	CleanWorkDir(workDir string) error
 }
 
 // builder is the concrete implementation of Builder using os/exec to run git and shell commands.
@@ -69,7 +70,7 @@ func (b *builder) pullRepo(repoURL, branch, workDir string) error {
 	configCmd.Run() // ignore errors
 
 	// git clean -fd — remove untracked files/dirs left by previous builds
-	cleanCmd := exec.Command("git", "clean", "-fd")
+	cleanCmd := exec.Command("git", "clean", "-fdx")
 	cleanCmd.Dir = workDir
 	cleanCmd.Run() // ignore errors
 
@@ -109,6 +110,19 @@ func (b *builder) pullRepo(repoURL, branch, workDir string) error {
 		return fmt.Errorf("git pull failed: %s: %w", sanitizeGitOutput(pullStderr.String(), repoURL), err)
 	}
 
+	return nil
+}
+
+// CleanWorkDir removes generated files from an existing Git checkout while
+// retaining tracked source files and Git metadata for the next deployment.
+func (b *builder) CleanWorkDir(workDir string) error {
+	cmd := exec.Command("git", "clean", "-fdx")
+	cmd.Dir = workDir
+	var stderr bytes.Buffer
+	cmd.Stderr = &stderr
+	if err := cmd.Run(); err != nil {
+		return fmt.Errorf("git clean failed: %s: %w", stderr.String(), err)
+	}
 	return nil
 }
 
