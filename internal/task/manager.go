@@ -26,6 +26,8 @@ import (
 const (
 	taskTimeout   = 30 * time.Minute
 	deployTimeout = 5 * time.Minute
+	frontendBuild = "frontend"
+	backendBuild  = "backend"
 )
 
 var ErrDeploymentsInProgress = errors.New("deployments are still in progress")
@@ -130,6 +132,8 @@ type taskManager struct {
 	cfgManager *config.Manager
 	cancelMap  sync.Map // taskID -> context.CancelFunc
 	historyMu  sync.Mutex
+	frontendMu chan struct{}
+	backendMu  chan struct{}
 }
 
 // NewTaskManager creates a new TaskManager instance.
@@ -137,10 +141,12 @@ type taskManager struct {
 // (e.g., in tests that only test task creation and querying).
 func NewTaskManager(database *sql.DB, bldr builder.Builder, dplyr deployer.Deployer, cfg *config.AppConfig) TaskManager {
 	return &taskManager{
-		database: database,
-		builder:  bldr,
-		deployer: dplyr,
-		cfg:      cfg,
+		database:   database,
+		builder:    bldr,
+		deployer:   dplyr,
+		cfg:        cfg,
+		frontendMu: make(chan struct{}, 1),
+		backendMu:  make(chan struct{}, 1),
 	}
 }
 
@@ -152,6 +158,8 @@ func NewTaskManagerWithConfigManager(database *sql.DB, bldr builder.Builder, dpl
 		deployer:   dplyr,
 		cfg:        cfgMgr.Get(),
 		cfgManager: cfgMgr,
+		frontendMu: make(chan struct{}, 1),
+		backendMu:  make(chan struct{}, 1),
 	}
 }
 
@@ -189,6 +197,40 @@ func safeWorkDirSegment(value string) string {
 		">", "_",
 		"|", "_",
 	).Replace(value)
+}
+
+func resolveBuildType(configuredType, buildCmd string) (string, error) {
+	buildType := strings.ToLower(strings.TrimSpace(configuredType))
+	if buildType == "" {
+		command := strings.ToLower(buildCmd)
+		if strings.Contains(command, "pnpm") || strings.Contains(command, "npm ") || strings.Contains(command, "yarn") {
+			return frontendBuild, nil
+		}
+		return backendBuild, nil
+	}
+	if buildType != frontendBuild && buildType != backendBuild {
+		return "", fmt.Errorf("invalid build_type %q: must be frontend or backend", configuredType)
+	}
+	return buildType, nil
+}
+
+func (m *taskManager) buildLane(buildType string) chan struct{} {
+	if buildType == frontendBuild {
+		return m.frontendMu
+	}
+	return m.backendMu
+}
+
+func (m *taskManager) acquireBuildLane(ctx context.Context, taskID, buildType string) error {
+	lane := m.buildLane(buildType)
+	m.appendLog(taskID, "queued", fmt.Sprintf("waiting for %s build lane", buildType))
+	select {
+	case lane <- struct{}{}:
+		m.appendLog(taskID, "queued", fmt.Sprintf("acquired %s build lane", buildType))
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
 }
 
 // getConfig returns the latest config, preferring the Manager if available.
@@ -246,7 +288,7 @@ func (m *taskManager) CreateTask(req DeployRequest) (*db.DeployTask, error) {
 
 	// Launch async deployment if builder and deployer are available.
 	if m.builder != nil && m.deployer != nil && m.getConfig() != nil {
-		ctx, cancel := context.WithTimeout(context.Background(), taskTimeout)
+		ctx, cancel := context.WithCancel(context.Background())
 		m.cancelMap.Store(task.ID, cancel)
 		go m.executeDeployment(ctx, task)
 	}
@@ -285,19 +327,32 @@ func (m *taskManager) executeDeployment(ctx context.Context, task *db.DeployTask
 		return
 	}
 
+	configuredBuildType := cfg.Projects[task.ProjectName].SubProjects[task.SubProject].BuildType
+	buildType, err := resolveBuildType(configuredBuildType, subProjEnvCfg.BuildCmd)
+	if err != nil {
+		m.failTask(task.ID, err.Error())
+		return
+	}
+	if err := m.acquireBuildLane(ctx, task.ID, buildType); err != nil {
+		m.failTask(task.ID, ctxErrMsg(ctx))
+		return
+	}
+	defer func() { <-m.buildLane(buildType) }()
+	// Queue wait time is not part of the deployment execution timeout.
+	ctx, cancelExecution := context.WithTimeout(ctx, taskTimeout)
+	defer cancelExecution()
+
 	// Build repo URL from Gitea config.
 	giteaCfg := cfg.GetGiteaConfig()
 	repoURL := buildRepoURL(giteaCfg, task.ProjectOwner, task.ProjectName)
 
-	// Keep environment, sub-project, and branch/tag in separate working copies so
-	// concurrent monorepo builds do not clean or overwrite each other's artifacts.
+	// Each build type has an independent serial lane. The lane lock protects this
+	// shared repository checkout from concurrent branch switching and cleanup.
 	workDir := filepath.Join(
 		cfg.Server.Workspace,
-		task.ProjectOwner,
-		task.ProjectName,
-		safeWorkDirSegment(task.Environment),
-		safeWorkDirSegment(task.SubProject),
-		safeWorkDirSegment(task.Branch),
+		buildType,
+		safeWorkDirSegment(task.ProjectOwner),
+		safeWorkDirSegment(task.ProjectName),
 	)
 
 	// Clone or pull the code.
@@ -306,6 +361,14 @@ func (m *taskManager) executeDeployment(ctx context.Context, task *db.DeployTask
 		return
 	}
 	m.appendLog(task.ID, "cloning", "代码拉取完成")
+
+	defer func() {
+		if err := m.builder.CleanWorkDir(workDir); err != nil {
+			m.appendLog(task.ID, "cleanup", fmt.Sprintf("cleaning build cache failed: %v", err))
+			return
+		}
+		m.appendLog(task.ID, "cleanup", "cleaned build outputs and project dependency cache")
+	}()
 
 	// --- Stage 2: Building ---
 	if ctx.Err() != nil {

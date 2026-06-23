@@ -112,6 +112,7 @@ export interface SubProjectEnvironmentConfig {
 
 export interface SubProjectBuildConfig {
   label: string
+  build_type: '' | 'frontend' | 'backend'
   env_overrides: Record<string, SubProjectEnvironmentConfig>
 }
 

@@ -24,8 +24,8 @@ services:
       - CONFIG_PATH=/app/config.yaml
       - DB_PATH=/app/data/deploy.db
       - BASE_PATH=/
-      - MAVEN_OPTS=-Xmx512m -XX:+UseParallelGC
-      - NODE_OPTIONS=--max-old-space-size=2048
+      - MAVEN_OPTS=-Xmx512m -XX:+UseParallelGC -Dmaven.repo.local=/root/.m2/repository
+      - NODE_OPTIONS=--max-old-space-size=4096
     restart: unless-stopped
     healthcheck:
       test: ["CMD-SHELL", "wget --no-verbose --tries=1 --spider \"http://localhost:82$${BASE_PATH:-}/api/health\""]
