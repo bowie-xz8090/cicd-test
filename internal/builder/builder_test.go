@@ -86,6 +86,34 @@ func TestCloneOrPull_Pull(t *testing.T) {
 	assert.NoError(t, err, "new.txt should exist after pull")
 }
 
+func TestCloneOrPull_ForceRefreshMovedTag(t *testing.T) {
+	bareRepo := initBareRepo(t, "main")
+	workDir := filepath.Join(t.TempDir(), "tag-target")
+	tagName := "v0.0.0"
+
+	pushDir := t.TempDir()
+	runGit(t, "", "clone", bareRepo, pushDir)
+	runGit(t, pushDir, "config", "user.email", "test@test.com")
+	runGit(t, pushDir, "config", "user.name", "Test")
+	runGit(t, pushDir, "tag", tagName)
+	runGit(t, pushDir, "push", "origin", tagName)
+
+	b := NewBuilder()
+	require.NoError(t, b.CloneOrPull(bareRepo, "main", workDir))
+
+	require.NoError(t, os.WriteFile(filepath.Join(pushDir, "moved.txt"), []byte("new tag target"), 0644))
+	runGit(t, pushDir, "add", ".")
+	runGit(t, pushDir, "commit", "-m", "move tag target")
+	runGit(t, pushDir, "tag", "-f", tagName)
+	runGit(t, pushDir, "push", "--force", "origin", tagName)
+
+	err := b.CloneOrPull(bareRepo, tagName, workDir)
+	require.NoError(t, err)
+
+	_, err = os.Stat(filepath.Join(workDir, "moved.txt"))
+	assert.NoError(t, err, "moved tag target should be checked out")
+}
+
 func TestCloneOrPull_InvalidRepo(t *testing.T) {
 	workDir := filepath.Join(t.TempDir(), "bad-clone")
 

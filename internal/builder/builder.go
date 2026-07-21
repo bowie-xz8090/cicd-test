@@ -74,8 +74,8 @@ func (b *builder) pullRepo(repoURL, branch, workDir string) error {
 	cleanCmd.Dir = workDir
 	cleanCmd.Run() // ignore errors
 
-	// git fetch origin --tags — fetch all branches and tags
-	fetchCmd := exec.Command("git", "fetch", "origin", "--tags")
+	// Force-refresh remote branches and tags so moved tags do not block deployments.
+	fetchCmd := exec.Command("git", "fetch", "origin", "+refs/heads/*:refs/remotes/origin/*", "+refs/tags/*:refs/tags/*")
 	fetchCmd.Dir = workDir
 	var fetchStderr bytes.Buffer
 	fetchCmd.Stderr = &fetchStderr
