@@ -331,8 +331,15 @@ sudo systemctl restart auto-deploy
 # 构建镜像（自动编译前端和后端，约 2-5 分钟）
 docker build -t auto-deploy-platform .
 
-# 导出为压缩包（约 50-80MB）
+# Linux/macOS：导出为压缩包（约 50-80MB）
 docker save auto-deploy-platform | gzip > auto-deploy-platform.tar.gz
+```
+
+Windows PowerShell / CMD 默认没有 `gzip`，请导出为未压缩的 tar 包：
+
+```powershell
+docker build -t auto-deploy-platform .
+docker save -o auto-deploy-platform.tar auto-deploy-platform:latest
 ```
 
 #### 步骤 2：准备配置文件
@@ -347,7 +354,9 @@ vim config.yaml    # 填入实际的 Gitea 地址、服务器密码等
 只需要传这 3 个文件：
 
 ```
-scp auto-deploy-platform.tar.gz root@your-server:/opt/deploy/
+scp auto-deploy-platform.tar.gz root@your-server:/opt/deploy/   # Linux/macOS gzip 方式
+# 或
+scp auto-deploy-platform.tar root@your-server:/opt/deploy/      # Windows docker save -o 方式
 scp config.yaml root@your-server:/opt/deploy/
 scp docker-compose.yml root@your-server:/opt/deploy/
 ```
@@ -356,7 +365,8 @@ scp docker-compose.yml root@your-server:/opt/deploy/
 
 ```
 /opt/deploy/
-├── auto-deploy-platform.tar.gz   # 镜像包
+├── auto-deploy-platform.tar.gz   # 镜像包（Linux/macOS gzip 方式）
+├── auto-deploy-platform.tar      # 镜像包（Windows docker save -o 方式，二选一）
 ├── config.yaml                    # 配置文件（含服务器密码，chmod 600）
 └── docker-compose.yml             # Docker 启动配置
 ```
@@ -367,6 +377,8 @@ scp docker-compose.yml root@your-server:/opt/deploy/
 cd /opt/deploy
 
 # 导入镜像
+docker load -i auto-deploy-platform.tar.gz
+# 或
 docker load -i auto-deploy-platform.tar
 
 # 启动
@@ -386,6 +398,8 @@ docker compose logs -f
 cd /opt/deploy
 
 # 1. 导入新镜像
+docker load -i auto-deploy-platform.tar.gz
+# 或
 docker load -i auto-deploy-platform.tar
 
 # 2. 停止旧容器并用新镜像重启
@@ -395,12 +409,6 @@ docker compose up -d
 # 3. 确认启动成功
 docker compose logs -f
 ```
-
-> **Windows 构建导出命令：**
-> ```powershell
-> docker compose build
-> docker save -o auto-deploy-platform.tar auto-deploy-platform:latest
-> ```
 
 ---
 
