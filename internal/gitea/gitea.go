@@ -20,14 +20,18 @@ type Repository struct {
 
 // Branch represents a branch in a Gitea repository.
 type Branch struct {
-	Name     string `json:"name"`
-	CommitID string `json:"commit_id"`
+	Name          string     `json:"name"`
+	CommitID      string     `json:"commit_id"`
+	CommitMessage string     `json:"commit_message"`
+	CommitTime    *time.Time `json:"commit_time,omitempty"`
 }
 
 // Tag represents a tag in a Gitea repository.
 type Tag struct {
-	Name     string `json:"name"`
-	CommitID string `json:"commit_id"`
+	Name          string     `json:"name"`
+	CommitID      string     `json:"commit_id"`
+	CommitMessage string     `json:"commit_message"`
+	CommitTime    *time.Time `json:"commit_time,omitempty"`
 }
 
 // GiteaClient defines the interface for interacting with the Gitea API.
@@ -83,7 +87,24 @@ type giteaBranch struct {
 
 // giteaCommit represents the commit object in a Gitea branch response.
 type giteaCommit struct {
-	ID string `json:"id"`
+	ID        string             `json:"id"`
+	SHA       string             `json:"sha"`
+	Message   string             `json:"message"`
+	Timestamp time.Time          `json:"timestamp"`
+	Created   time.Time          `json:"created"`
+	Commit    giteaCommitDetails `json:"commit"`
+	Author    giteaSignature     `json:"author"`
+	Committer giteaSignature     `json:"committer"`
+}
+
+type giteaCommitDetails struct {
+	Message   string         `json:"message"`
+	Author    giteaSignature `json:"author"`
+	Committer giteaSignature `json:"committer"`
+}
+
+type giteaSignature struct {
+	Date time.Time `json:"date"`
 }
 
 // giteaTag represents a single tag in the Gitea API response.
@@ -148,9 +169,12 @@ func (c *giteaClient) ListBranches(owner, repo string) ([]Branch, error) {
 
 	branches := make([]Branch, 0, len(giteaBranches))
 	for _, b := range giteaBranches {
+		c.hydrateCommit(owner, repo, &b.Commit)
 		branches = append(branches, Branch{
-			Name:     b.Name,
-			CommitID: b.Commit.ID,
+			Name:          b.Name,
+			CommitID:      b.Commit.id(),
+			CommitMessage: b.Commit.commitMessage(),
+			CommitTime:    b.Commit.commitTime(),
 		})
 	}
 
@@ -173,13 +197,70 @@ func (c *giteaClient) ListTags(owner, repo string) ([]Tag, error) {
 
 	tags := make([]Tag, 0, len(giteaTags))
 	for _, t := range giteaTags {
+		c.hydrateCommit(owner, repo, &t.Commit)
 		tags = append(tags, Tag{
-			Name:     t.Name,
-			CommitID: t.Commit.ID,
+			Name:          t.Name,
+			CommitID:      t.Commit.id(),
+			CommitMessage: t.Commit.commitMessage(),
+			CommitTime:    t.Commit.commitTime(),
 		})
 	}
 
 	return tags, nil
+}
+
+func (c *giteaClient) hydrateCommit(owner, repo string, commit *giteaCommit) {
+	if commit == nil || commit.id() == "" || (commit.commitMessage() != "" && commit.commitTime() != nil) {
+		return
+	}
+
+	url := fmt.Sprintf("%s/api/v1/repos/%s/%s/git/commits/%s", c.baseURL, owner, repo, commit.id())
+	body, err := c.doRequest(url)
+	if err != nil {
+		return
+	}
+
+	var detail giteaCommit
+	if err := json.Unmarshal(body, &detail); err != nil {
+		return
+	}
+	if detail.ID == "" {
+		detail.ID = commit.ID
+	}
+	if detail.SHA == "" {
+		detail.SHA = commit.SHA
+	}
+	*commit = detail
+}
+
+func (c giteaCommit) id() string {
+	if c.ID != "" {
+		return c.ID
+	}
+	return c.SHA
+}
+
+func (c giteaCommit) commitMessage() string {
+	if c.Commit.Message != "" {
+		return c.Commit.Message
+	}
+	return c.Message
+}
+
+func (c giteaCommit) commitTime() *time.Time {
+	for _, t := range []time.Time{
+		c.Commit.Committer.Date,
+		c.Commit.Author.Date,
+		c.Committer.Date,
+		c.Author.Date,
+		c.Timestamp,
+		c.Created,
+	} {
+		if !t.IsZero() {
+			return &t
+		}
+	}
+	return nil
 }
 
 // doRequest performs an authenticated GET request to the given URL and returns the response body.

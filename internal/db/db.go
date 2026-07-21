@@ -10,24 +10,27 @@ import (
 
 // DeployTask represents a deployment task record in the database.
 type DeployTask struct {
-	ID           string     `json:"id" db:"id"`
-	ProjectOwner string     `json:"project_owner" db:"project_owner"`
-	ProjectName  string     `json:"project_name" db:"project_name"`
-	SubProject   string     `json:"sub_project" db:"sub_project"`
-	Branch       string     `json:"branch" db:"branch"`
-	Environment  string     `json:"environment" db:"environment"`
-	Status       string     `json:"status" db:"status"`
-	Logs         string     `json:"logs" db:"logs"`
-	ErrorMessage string     `json:"error_message" db:"error_message"`
-	CreatedAt    time.Time  `json:"created_at" db:"created_at"`
-	UpdatedAt    time.Time  `json:"updated_at" db:"updated_at"`
-	FinishedAt   *time.Time `json:"finished_at" db:"finished_at"`
+	ID            string     `json:"id" db:"id"`
+	ProjectOwner  string     `json:"project_owner" db:"project_owner"`
+	ProjectName   string     `json:"project_name" db:"project_name"`
+	SubProject    string     `json:"sub_project" db:"sub_project"`
+	Branch        string     `json:"branch" db:"branch"`
+	CommitMessage string     `json:"commit_message" db:"commit_message"`
+	CommitTime    *time.Time `json:"commit_time" db:"commit_time"`
+	Environment   string     `json:"environment" db:"environment"`
+	Status        string     `json:"status" db:"status"`
+	Logs          string     `json:"logs" db:"logs"`
+	ErrorMessage  string     `json:"error_message" db:"error_message"`
+	CreatedAt     time.Time  `json:"created_at" db:"created_at"`
+	UpdatedAt     time.Time  `json:"updated_at" db:"updated_at"`
+	FinishedAt    *time.Time `json:"finished_at" db:"finished_at"`
 }
 
 // RecordFilter holds filtering and pagination parameters for listing deploy records.
 type RecordFilter struct {
 	Project     string `form:"project"`
 	Environment string `form:"environment"`
+	Status      string `form:"status"`
 	Page        int    `form:"page,default=1"`
 	PageSize    int    `form:"page_size,default=20"`
 }
@@ -39,6 +42,8 @@ CREATE TABLE IF NOT EXISTS deploy_tasks (
     project_name TEXT NOT NULL,
     sub_project TEXT DEFAULT '',
     branch TEXT NOT NULL,
+    commit_message TEXT DEFAULT '',
+    commit_time DATETIME,
     environment TEXT NOT NULL CHECK(environment IN ('dev', 'sit', 'prod')),
     status TEXT NOT NULL DEFAULT 'pending' CHECK(status IN ('pending', 'cloning', 'building', 'deploying', 'success', 'failed')),
     logs TEXT DEFAULT '',
@@ -59,6 +64,14 @@ CREATE INDEX IF NOT EXISTS idx_deploy_tasks_created_at ON deploy_tasks(created_a
 
 const migrateAddSubProjectSQL = `
 ALTER TABLE deploy_tasks ADD COLUMN sub_project TEXT DEFAULT '';
+`
+
+const migrateAddCommitMessageSQL = `
+ALTER TABLE deploy_tasks ADD COLUMN commit_message TEXT DEFAULT '';
+`
+
+const migrateAddCommitTimeSQL = `
+ALTER TABLE deploy_tasks ADD COLUMN commit_time DATETIME;
 `
 
 // InitDB opens a SQLite database at the given path and creates the deploy_tasks
@@ -87,6 +100,8 @@ func InitDB(dbPath string) (*sql.DB, error) {
 
 	// Migration: add sub_project column if it doesn't exist (for existing databases)
 	_, _ = db.Exec(migrateAddSubProjectSQL) // Ignore error if column already exists
+	_, _ = db.Exec(migrateAddCommitMessageSQL)
+	_, _ = db.Exec(migrateAddCommitTimeSQL)
 
 	if _, err := db.Exec(createIndexesSQL); err != nil {
 		db.Close()
@@ -100,9 +115,14 @@ func InitDB(dbPath string) (*sql.DB, error) {
 // The task's CreatedAt and UpdatedAt fields are stored as RFC3339 strings.
 func CreateTask(db *sql.DB, task *DeployTask) error {
 	query := `
-		INSERT INTO deploy_tasks (id, project_owner, project_name, sub_project, branch, environment, status, logs, error_message, created_at, updated_at, finished_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		INSERT INTO deploy_tasks (id, project_owner, project_name, sub_project, branch, commit_message, commit_time, environment, status, logs, error_message, created_at, updated_at, finished_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 	`
+	var commitTime *string
+	if task.CommitTime != nil {
+		s := task.CommitTime.UTC().Format(time.RFC3339)
+		commitTime = &s
+	}
 	var finishedAt *string
 	if task.FinishedAt != nil {
 		s := task.FinishedAt.UTC().Format(time.RFC3339)
@@ -115,6 +135,8 @@ func CreateTask(db *sql.DB, task *DeployTask) error {
 		task.ProjectName,
 		task.SubProject,
 		task.Branch,
+		task.CommitMessage,
+		commitTime,
 		task.Environment,
 		task.Status,
 		task.Logs,
@@ -133,13 +155,14 @@ func CreateTask(db *sql.DB, task *DeployTask) error {
 // Returns nil and an error if the task is not found.
 func GetTaskByID(db *sql.DB, id string) (*DeployTask, error) {
 	query := `
-		SELECT id, project_owner, project_name, sub_project, branch, environment, status, logs, error_message, created_at, updated_at, finished_at
+		SELECT id, project_owner, project_name, sub_project, branch, commit_message, commit_time, environment, status, logs, error_message, created_at, updated_at, finished_at
 		FROM deploy_tasks WHERE id = ?
 	`
 	row := db.QueryRow(query, id)
 
 	var task DeployTask
 	var createdAt, updatedAt string
+	var commitTime *string
 	var finishedAt *string
 
 	err := row.Scan(
@@ -148,6 +171,8 @@ func GetTaskByID(db *sql.DB, id string) (*DeployTask, error) {
 		&task.ProjectName,
 		&task.SubProject,
 		&task.Branch,
+		&task.CommitMessage,
+		&commitTime,
 		&task.Environment,
 		&task.Status,
 		&task.Logs,
@@ -163,6 +188,13 @@ func GetTaskByID(db *sql.DB, id string) (*DeployTask, error) {
 		return nil, fmt.Errorf("failed to get task: %w", err)
 	}
 
+	if commitTime != nil && *commitTime != "" {
+		t, err := time.Parse(time.RFC3339, *commitTime)
+		if err != nil {
+			return nil, fmt.Errorf("failed to parse commit_time: %w", err)
+		}
+		task.CommitTime = &t
+	}
 	task.CreatedAt, err = time.Parse(time.RFC3339, createdAt)
 	if err != nil {
 		return nil, fmt.Errorf("failed to parse created_at: %w", err)
@@ -282,6 +314,10 @@ func ListRecords(db *sql.DB, filter RecordFilter) ([]DeployTask, int, error) {
 		where += " AND environment = ?"
 		args = append(args, filter.Environment)
 	}
+	if filter.Status != "" {
+		where += " AND status = ?"
+		args = append(args, filter.Status)
+	}
 
 	// Get total count.
 	countQuery := "SELECT COUNT(*) FROM deploy_tasks " + where
@@ -292,7 +328,7 @@ func ListRecords(db *sql.DB, filter RecordFilter) ([]DeployTask, int, error) {
 
 	// Get paginated records.
 	offset := (filter.Page - 1) * filter.PageSize
-	dataQuery := "SELECT id, project_owner, project_name, sub_project, branch, environment, status, logs, error_message, created_at, updated_at, finished_at FROM deploy_tasks " +
+	dataQuery := "SELECT id, project_owner, project_name, sub_project, branch, commit_message, commit_time, environment, status, logs, error_message, created_at, updated_at, finished_at FROM deploy_tasks " +
 		where + " ORDER BY created_at DESC LIMIT ? OFFSET ?"
 	dataArgs := append(args, filter.PageSize, offset)
 
@@ -306,6 +342,7 @@ func ListRecords(db *sql.DB, filter RecordFilter) ([]DeployTask, int, error) {
 	for rows.Next() {
 		var task DeployTask
 		var createdAt, updatedAt string
+		var commitTime *string
 		var finishedAt *string
 
 		if err := rows.Scan(
@@ -314,6 +351,8 @@ func ListRecords(db *sql.DB, filter RecordFilter) ([]DeployTask, int, error) {
 			&task.ProjectName,
 			&task.SubProject,
 			&task.Branch,
+			&task.CommitMessage,
+			&commitTime,
 			&task.Environment,
 			&task.Status,
 			&task.Logs,
@@ -325,6 +364,13 @@ func ListRecords(db *sql.DB, filter RecordFilter) ([]DeployTask, int, error) {
 			return nil, 0, fmt.Errorf("failed to scan record: %w", err)
 		}
 
+		if commitTime != nil && *commitTime != "" {
+			t, err := time.Parse(time.RFC3339, *commitTime)
+			if err != nil {
+				return nil, 0, fmt.Errorf("failed to parse commit_time: %w", err)
+			}
+			task.CommitTime = &t
+		}
 		task.CreatedAt, err = time.Parse(time.RFC3339, createdAt)
 		if err != nil {
 			return nil, 0, fmt.Errorf("failed to parse created_at: %w", err)
@@ -349,6 +395,105 @@ func ListRecords(db *sql.DB, filter RecordFilter) ([]DeployTask, int, error) {
 	}
 
 	return tasks, total, nil
+}
+
+// ListAllRecords returns all deploy tasks matching the non-pagination filters.
+func ListAllRecords(db *sql.DB, filter RecordFilter) ([]DeployTask, int, error) {
+	where := "WHERE 1=1"
+	args := []interface{}{}
+
+	if filter.Project != "" {
+		where += " AND project_name = ?"
+		args = append(args, filter.Project)
+	}
+	if filter.Environment != "" {
+		where += " AND environment = ?"
+		args = append(args, filter.Environment)
+	}
+	if filter.Status != "" {
+		where += " AND status = ?"
+		args = append(args, filter.Status)
+	}
+
+	countQuery := "SELECT COUNT(*) FROM deploy_tasks " + where
+	var total int
+	if err := db.QueryRow(countQuery, args...).Scan(&total); err != nil {
+		return nil, 0, fmt.Errorf("failed to count records: %w", err)
+	}
+
+	dataQuery := "SELECT id, project_owner, project_name, sub_project, branch, commit_message, commit_time, environment, status, logs, error_message, created_at, updated_at, finished_at FROM deploy_tasks " +
+		where + " ORDER BY created_at DESC"
+	rows, err := db.Query(dataQuery, args...)
+	if err != nil {
+		return nil, 0, fmt.Errorf("failed to query records: %w", err)
+	}
+	defer rows.Close()
+
+	tasks, err := scanDeployTasks(rows)
+	if err != nil {
+		return nil, 0, err
+	}
+	return tasks, total, nil
+}
+
+func scanDeployTasks(rows *sql.Rows) ([]DeployTask, error) {
+	var tasks []DeployTask
+	for rows.Next() {
+		var task DeployTask
+		var createdAt, updatedAt string
+		var commitTime *string
+		var finishedAt *string
+
+		if err := rows.Scan(
+			&task.ID,
+			&task.ProjectOwner,
+			&task.ProjectName,
+			&task.SubProject,
+			&task.Branch,
+			&task.CommitMessage,
+			&commitTime,
+			&task.Environment,
+			&task.Status,
+			&task.Logs,
+			&task.ErrorMessage,
+			&createdAt,
+			&updatedAt,
+			&finishedAt,
+		); err != nil {
+			return nil, fmt.Errorf("failed to scan record: %w", err)
+		}
+
+		if commitTime != nil && *commitTime != "" {
+			t, err := time.Parse(time.RFC3339, *commitTime)
+			if err != nil {
+				return nil, fmt.Errorf("failed to parse commit_time: %w", err)
+			}
+			task.CommitTime = &t
+		}
+		var err error
+		task.CreatedAt, err = time.Parse(time.RFC3339, createdAt)
+		if err != nil {
+			return nil, fmt.Errorf("failed to parse created_at: %w", err)
+		}
+		task.UpdatedAt, err = time.Parse(time.RFC3339, updatedAt)
+		if err != nil {
+			return nil, fmt.Errorf("failed to parse updated_at: %w", err)
+		}
+		if finishedAt != nil {
+			t, err := time.Parse(time.RFC3339, *finishedAt)
+			if err != nil {
+				return nil, fmt.Errorf("failed to parse finished_at: %w", err)
+			}
+			task.FinishedAt = &t
+		}
+
+		tasks = append(tasks, task)
+	}
+
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("error iterating records: %w", err)
+	}
+	return tasks, nil
 }
 
 // ClearDeployHistory removes deployment records and compacts the SQLite database

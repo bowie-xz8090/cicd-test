@@ -6,12 +6,21 @@
     <!-- Filter controls -->
     <div class="filter-bar">
       <div class="filter-group">
-        <label for="filter-project">项目名称</label>
+        <label for="filter-project">项目关键字</label>
         <input
           id="filter-project"
-          v-model="filter.project"
+          v-model="filter.project_keyword"
           type="text"
-          placeholder="输入项目名称筛选"
+          placeholder="项目名称或标签"
+        />
+      </div>
+      <div class="filter-group">
+        <label for="filter-sub-project">子项目关键字</label>
+        <input
+          id="filter-sub-project"
+          v-model="filter.sub_project_keyword"
+          type="text"
+          placeholder="子项目名称或标签"
         />
       </div>
       <div class="filter-group">
@@ -27,8 +36,24 @@
           </option>
         </select>
       </div>
+      <div class="filter-group">
+        <label for="filter-status">状态</label>
+        <select id="filter-status" v-model="filter.status">
+          <option value="">全部</option>
+          <option
+            v-for="option in statusOptions"
+            :key="option.value"
+            :value="option.value"
+          >
+            {{ option.label }}
+          </option>
+        </select>
+      </div>
       <button class="search-btn" @click="handleSearch" :disabled="loading">
         查询
+      </button>
+      <button class="reset-btn" @click="handleReset" :disabled="loading">
+        重置
       </button>
       <button class="refresh-btn" @click="handleRefresh" :disabled="loading">
         刷新
@@ -55,6 +80,7 @@
             <th>项目名称</th>
             <th>子项目</th>
             <th>分支/Tag</th>
+            <th>最后 commit</th>
             <th>环境</th>
             <th>状态</th>
             <th>触发时间</th>
@@ -67,9 +93,41 @@
               :class="{ 'row-selected': selectedRecordId === record.id }"
               @click="handleRowClick(record.id)"
             >
-              <td>{{ record.project_label || record.project_name }}</td>
-              <td>{{ record.sub_project_label || record.sub_project || '-' }}</td>
+              <td>
+                <div class="name-with-tags">
+                  <span class="entity-name">{{ record.project_name }}</span>
+                  <span v-if="splitLabelTags(record.project_label).length" class="entity-tags">
+                    <span
+                      v-for="tag in splitLabelTags(record.project_label)"
+                      :key="tag"
+                      class="label-chip label-chip-project"
+                    >
+                      {{ tag }}
+                    </span>
+                  </span>
+                </div>
+              </td>
+              <td>
+                <div class="name-with-tags">
+                  <span class="entity-name">{{ record.sub_project || '-' }}</span>
+                  <span v-if="splitLabelTags(record.sub_project_label).length" class="entity-tags">
+                    <span
+                      v-for="tag in splitLabelTags(record.sub_project_label)"
+                      :key="tag"
+                      class="label-chip label-chip-subproject"
+                    >
+                      {{ tag }}
+                    </span>
+                  </span>
+                </div>
+              </td>
               <td>{{ record.branch }}</td>
+              <td>
+                <div class="commit-info">
+                  <div class="commit-message">{{ record.commit_message || '-' }}</div>
+                  <div class="commit-time">{{ record.commit_time ? formatTime(record.commit_time) : '暂无提交时间' }}</div>
+                </div>
+              </td>
               <td>{{ environmentLabel(record.environment) }}</td>
               <td>
                 <span :class="['status-badge', statusClass(record.status)]">
@@ -87,7 +145,7 @@
               <td>{{ formatTime(record.created_at) }}</td>
             </tr>
             <tr v-if="selectedRecordId === record.id" class="log-row">
-              <td colspan="6">
+              <td colspan="7">
                 <LogViewer :task-id="record.id" />
               </td>
             </tr>
@@ -131,8 +189,10 @@ const total = ref(0)
 const environments = ref<Environment[]>([])
 const environmentLabels = ref<Record<string, string>>({})
 const filter = reactive({
-  project: '',
+  project_keyword: '',
+  sub_project_keyword: '',
   environment: '',
+  status: '',
   page: 1,
   page_size: 20,
 })
@@ -154,6 +214,11 @@ const STATUS_MAP: Record<string, { label: string; cssClass: string }> = {
   success: { label: '成功', cssClass: 'status-success' },
   failed: { label: '失败', cssClass: 'status-failed' },
 }
+
+const statusOptions = Object.entries(STATUS_MAP).map(([value, meta]) => ({
+  value,
+  label: meta.label,
+}))
 
 function statusLabel(status: string): string {
   return STATUS_MAP[status]?.label ?? status
@@ -190,11 +255,17 @@ async function loadRecords() {
       page: filter.page,
       page_size: filter.page_size,
     }
-    if (filter.project) {
-      params.project = filter.project
+    if (filter.project_keyword) {
+      params.project_keyword = filter.project_keyword
+    }
+    if (filter.sub_project_keyword) {
+      params.sub_project_keyword = filter.sub_project_keyword
     }
     if (filter.environment) {
       params.environment = filter.environment
+    }
+    if (filter.status) {
+      params.status = filter.status
     }
     const result = await fetchRecords(params)
     records.value = result.records ?? []
@@ -208,6 +279,16 @@ async function loadRecords() {
 }
 
 function handleSearch() {
+  filter.page = 1
+  selectedRecordId.value = null
+  loadRecords()
+}
+
+function handleReset() {
+  filter.project_keyword = ''
+  filter.sub_project_keyword = ''
+  filter.environment = ''
+  filter.status = ''
   filter.page = 1
   selectedRecordId.value = null
   loadRecords()
@@ -230,6 +311,13 @@ async function handleClear() {
   } finally {
     loading.value = false
   }
+}
+
+function splitLabelTags(label: string): string[] {
+  return (label || '')
+    .split('/')
+    .map(item => item.trim())
+    .filter(Boolean)
 }
 
 function handleRefresh() {
@@ -385,6 +473,28 @@ h1 {
   cursor: not-allowed;
 }
 
+.reset-btn {
+  padding: 8px 20px;
+  background: #fff;
+  color: #4b5563;
+  border: 1px solid #d1d5db;
+  border-radius: 6px;
+  font-size: 0.9rem;
+  font-weight: 600;
+  cursor: pointer;
+  transition: background 0.15s, color 0.15s;
+}
+
+.reset-btn:hover:not(:disabled) {
+  background: #f9fafb;
+  color: #111827;
+}
+
+.reset-btn:disabled {
+  color: #d1d5db;
+  cursor: not-allowed;
+}
+
 .refresh-btn {
   padding: 8px 20px;
   background: #fff;
@@ -496,6 +606,67 @@ h1 {
   padding: 10px 14px;
   font-size: 0.9rem;
   border-bottom: 1px solid #f3f4f6;
+}
+
+.name-with-tags {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+  min-width: 140px;
+}
+
+.entity-name {
+  color: #111827;
+  font-weight: 500;
+  overflow-wrap: anywhere;
+}
+
+.entity-tags {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  flex-wrap: wrap;
+}
+
+.label-chip {
+  display: inline-flex;
+  align-items: center;
+  border: 1px solid;
+  border-radius: 3px;
+  padding: 1px 6px;
+  font-size: 0.72rem;
+  font-weight: 500;
+  line-height: 1.35;
+}
+
+.label-chip-project {
+  color: #1e40af;
+  border-color: #bfdbfe;
+  background: #eff6ff;
+}
+
+.label-chip-subproject {
+  color: #047857;
+  border-color: #bbf7d0;
+  background: #f0fdf4;
+}
+
+.commit-info {
+  max-width: 360px;
+}
+
+.commit-message {
+  color: #111827;
+  line-height: 1.35;
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
+}
+
+.commit-time {
+  color: #6b7280;
+  font-size: 0.78rem;
+  margin-top: 4px;
 }
 
 .record-row {

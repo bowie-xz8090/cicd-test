@@ -22,24 +22,78 @@
     />
 
     <form class="deploy-form" @submit.prevent="handleDeploy">
-      <!-- Project select -->
-      <div class="form-group">
-        <label for="project-select">项目</label>
-        <select
-          id="project-select"
-          v-model="selectedProjectIndex"
+      <!-- Project cascader -->
+      <div ref="projectCascaderRef" class="form-group project-cascader">
+        <label for="project-cascader">项目</label>
+        <button
+          id="project-cascader"
+          type="button"
+          class="cascader-trigger"
+          :class="{ 'cascader-trigger-open': isProjectCascaderOpen }"
           :disabled="loadingProjects"
+          @click="toggleProjectCascader"
         >
-          <option :value="-1" disabled>请选择项目</option>
-          <option
-            v-for="(project, index) in projects"
-            :key="project.full_name + '/' + project.sub_project"
-            :value="index"
-          >
-            {{ project.label }}
-          </option>
-        </select>
+          <span :class="{ 'cascader-placeholder': !selectedProject }">
+            {{ selectedProjectPath || '请选择项目 / 子项目' }}
+          </span>
+          <span class="cascader-arrow">›</span>
+        </button>
         <span v-if="loadingProjects" class="loading-hint">加载项目列表中…</span>
+
+        <div
+          v-if="isProjectCascaderOpen"
+          class="cascader-panel"
+          :class="{ 'cascader-panel-expanded': activeProjectKey }"
+        >
+          <div class="cascader-column">
+            <button
+              v-for="project in projectGroups"
+              :key="project.key"
+              type="button"
+              class="cascader-option"
+              :class="{ 'cascader-option-active': activeProjectKey === project.key }"
+              @click="activeProjectKey = project.key"
+            >
+              <span class="cascader-option-content">
+                <span class="cascader-option-name">{{ project.name }}</span>
+                <span class="cascader-option-tags">
+                  <span
+                    v-for="tag in splitLabelTags(project.label)"
+                    :key="tag"
+                    class="label-chip label-chip-project"
+                  >
+                    {{ tag }}
+                  </span>
+                </span>
+              </span>
+              <span class="cascader-next">›</span>
+            </button>
+          </div>
+
+          <div v-if="activeProjectKey" class="cascader-column">
+            <button
+              v-for="project in activeProjectSubProjects"
+              :key="project.sub_project"
+              type="button"
+              class="cascader-option"
+              :class="{ 'cascader-option-active': selectedProject?.sub_project === project.sub_project && selectedProjectKey === activeProjectKey }"
+              @click="selectSubProject(project)"
+            >
+              <span class="cascader-option-content">
+                <span class="cascader-option-name">{{ project.sub_project }}</span>
+                <span class="cascader-option-tags">
+                  <span
+                    v-for="tag in splitLabelTags(subProjectLabel(project))"
+                    :key="tag"
+                    class="label-chip label-chip-subproject"
+                  >
+                    {{ tag }}
+                  </span>
+                </span>
+              </span>
+            </button>
+          </div>
+        </div>
       </div>
 
       <!-- Ref type toggle + Branch/Tag select -->
@@ -62,7 +116,7 @@
         <select
           id="ref-select"
           v-model="selectedRef"
-          :disabled="selectedProjectIndex < 0 || loadingRefs"
+          :disabled="!selectedProject || loadingRefs"
         >
           <option value="" disabled>{{ refType === 'branch' ? '请选择分支' : '请选择标签' }}</option>
           <option
@@ -74,6 +128,18 @@
           </option>
         </select>
         <span v-if="loadingRefs" class="loading-hint">加载中…</span>
+        <div v-if="selectedRefInfo" class="last-commit-panel">
+          <div class="last-commit-heading">最后 commit</div>
+          <div class="last-commit-message">
+            {{ selectedRefInfo.commit_message || '暂无提交内容' }}
+          </div>
+          <div class="last-commit-meta">
+            <span>{{ formattedSelectedCommitTime }}</span>
+            <span v-if="selectedRefInfo.commit_id" class="commit-sha">
+              {{ shortCommitId(selectedRefInfo.commit_id) }}
+            </span>
+          </div>
+        </div>
       </div>
 
       <!-- Environment select -->
@@ -179,7 +245,7 @@
 </template>
 
 <script setup lang="ts">
-import { ref, computed, watch, onMounted, nextTick } from 'vue'
+import { ref, computed, watch, onMounted, onUnmounted, nextTick } from 'vue'
 import {
   fetchProjects,
   fetchBranches,
@@ -204,7 +270,9 @@ const branches = ref<Branch[]>([])
 const tags = ref<Tag[]>([])
 const environments = ref<Environment[]>([])
 
-const selectedProjectIndex = ref(-1)
+const selectedProjectKey = ref('')
+const selectedSubProject = ref('')
+const activeProjectKey = ref('')
 const refType = ref<'branch' | 'tag'>('branch')
 const selectedRef = ref('')
 const selectedEnvironment = ref('dev')
@@ -217,6 +285,8 @@ const loadingRefs = ref(false)
 const deploying = ref(false)
 
 const showDeployStatus = ref(false)
+const isProjectCascaderOpen = ref(false)
+const projectCascaderRef = ref<HTMLElement | null>(null)
 
 // Password modal state
 const showPasswordModal = ref(false)
@@ -226,13 +296,74 @@ const passwordEnvLabel = ref('')
 const passwordInputRef = ref<HTMLInputElement | null>(null)
 
 // --- Computed ---
+interface ProjectGroup {
+  key: string
+  name: string
+  label: string
+  projects: Project[]
+}
+
+const projectGroups = computed<ProjectGroup[]>(() => {
+  const groups = new Map<string, ProjectGroup>()
+  for (const project of projects.value) {
+    const key = projectKey(project)
+    const existing = groups.get(key)
+    if (existing) {
+      existing.projects.push(project)
+    } else {
+      groups.set(key, {
+        key,
+        name: project.name,
+        label: projectLabel(project),
+        projects: [project],
+      })
+    }
+  }
+
+  return [...groups.values()]
+    .map(group => ({
+      ...group,
+      projects: sortSubProjects(group.projects),
+    }))
+    .sort((a, b) => compareText(a.name, b.name) || compareText(a.key, b.key))
+})
+
+const selectedProjectGroup = computed(() => {
+  return projectGroups.value.find(group => group.key === selectedProjectKey.value) ?? null
+})
+
+const selectedProjectSubProjects = computed(() => {
+  return selectedProjectGroup.value?.projects ?? []
+})
+
+const activeProjectGroup = computed(() => {
+  return projectGroups.value.find(group => group.key === activeProjectKey.value) ?? selectedProjectGroup.value ?? projectGroups.value[0] ?? null
+})
+
+const activeProjectSubProjects = computed(() => {
+  return activeProjectGroup.value?.projects ?? []
+})
+
 const selectedProject = computed(() => {
-  if (selectedProjectIndex.value < 0) return null
-  return projects.value[selectedProjectIndex.value] ?? null
+  return selectedProjectSubProjects.value.find(project => project.sub_project === selectedSubProject.value) ?? null
+})
+
+const selectedProjectPath = computed(() => {
+  if (!selectedProject.value) return ''
+  return `${selectedProject.value.name} / ${selectedProject.value.sub_project}`
 })
 
 const refList = computed(() => {
   return refType.value === 'branch' ? branches.value : tags.value
+})
+
+const selectedRefInfo = computed(() => {
+  return refList.value.find(item => item.name === selectedRef.value) ?? null
+})
+
+const formattedSelectedCommitTime = computed(() => {
+  if (!selectedRefInfo.value?.commit_time) return '暂无提交时间'
+  return formatCommitTime(selectedRefInfo.value.commit_time)
 })
 
 const canDeploy = computed(() => {
@@ -255,22 +386,110 @@ function compareText(a: string, b: string): number {
 function sortProjects(list: Project[]): Project[] {
   return [...list].sort((a, b) => {
     return (
-      compareText(a.label, b.label) ||
-      compareText(a.owner, b.owner) ||
       compareText(a.name, b.name) ||
+      compareText(a.sub_project, b.sub_project) ||
+      compareText(a.owner, b.owner) ||
       compareText(a.full_name, b.full_name) ||
-      compareText(a.sub_project, b.sub_project)
+      compareText(projectLabel(a), projectLabel(b)) ||
+      compareText(subProjectLabel(a), subProjectLabel(b))
     )
   })
+}
+
+function sortSubProjects(list: Project[]): Project[] {
+  return [...list].sort((a, b) => (
+    compareText(a.sub_project, b.sub_project) ||
+    compareText(subProjectLabel(a), subProjectLabel(b))
+  ))
+}
+
+function projectKey(project: Project): string {
+  return `${project.owner}/${project.name}`
+}
+
+function projectLabel(project: Project): string {
+  return project.project_label || project.name
+}
+
+function subProjectLabel(project: Project): string {
+  return project.sub_project_label || project.sub_project
+}
+
+function splitLabelTags(label: string): string[] {
+  return label
+    .split('/')
+    .map(item => item.trim())
+    .filter(Boolean)
+}
+
+function openProjectCascader() {
+  if (loadingProjects.value) return
+  activeProjectKey.value = ''
+  isProjectCascaderOpen.value = true
+}
+
+function closeProjectCascader() {
+  isProjectCascaderOpen.value = false
+}
+
+function toggleProjectCascader() {
+  if (isProjectCascaderOpen.value) {
+    closeProjectCascader()
+  } else {
+    openProjectCascader()
+  }
+}
+
+async function selectSubProject(project: Project) {
+  selectedProjectKey.value = projectKey(project)
+  selectedSubProject.value = project.sub_project
+  selectedRef.value = ''
+  branches.value = []
+  tags.value = []
+  deployResult.value = null
+  closeProjectCascader()
+
+  await Promise.all([loadRefs(), loadEnvironments()])
+}
+
+function handleDocumentClick(event: MouseEvent) {
+  const target = event.target
+  if (!(target instanceof Node)) return
+  if (!projectCascaderRef.value?.contains(target)) {
+    closeProjectCascader()
+  }
 }
 
 function sortRefs<T extends { name: string }>(list: T[]): T[] {
   return [...list].sort((a, b) => compareText(a.name, b.name))
 }
 
+function shortCommitId(commitID: string): string {
+  return commitID.length > 8 ? commitID.slice(0, 8) : commitID
+}
+
+function formatCommitTime(value: string): string {
+  const date = new Date(value)
+  if (Number.isNaN(date.getTime())) return value
+  return new Intl.DateTimeFormat('zh-CN', {
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit',
+    second: '2-digit',
+    hour12: false,
+  }).format(date)
+}
+
 // --- Load on mount ---
 onMounted(async () => {
   await Promise.all([loadProjects(), loadEnvironments()])
+  document.addEventListener('click', handleDocumentClick)
+})
+
+onUnmounted(() => {
+  document.removeEventListener('click', handleDocumentClick)
 })
 
 async function loadProjects() {
@@ -298,21 +517,10 @@ async function loadEnvironments() {
   }
 }
 
-// --- Watch project selection ---
-watch(selectedProjectIndex, async (newVal) => {
-  selectedRef.value = ''
-  branches.value = []
-  tags.value = []
-  deployResult.value = null
-
-  if (newVal < 0) return
-  await Promise.all([loadRefs(), loadEnvironments()])
-})
-
 // --- Watch refType to reload list ---
 watch(refType, async () => {
   selectedRef.value = ''
-  if (selectedProjectIndex.value < 0) return
+  if (!selectedProject.value) return
   await loadRefs()
 })
 
@@ -354,7 +562,7 @@ async function handleDeploy() {
     // Show normal confirm dialog
     const envLabel = selectedEnv?.label ?? selectedEnvironment.value
     const refLabel = refType.value === 'branch' ? '分支' : '标签'
-    const confirmMsg = `确认部署？\n\n项目：${proj.label}\n${refLabel}：${selectedRef.value}\n环境：${envLabel}`
+    const confirmMsg = `确认部署？\n\n项目：${projectLabel(proj)}\n子项目：${subProjectLabel(proj)}\n${refLabel}：${selectedRef.value}\n环境：${envLabel}`
     if (!window.confirm(confirmMsg)) return
     await executeDeploy()
   }
@@ -389,6 +597,8 @@ async function executeDeploy(deployPassword?: string) {
       project_owner: proj.owner,
       project_name: proj.name,
       branch: selectedRef.value,
+      commit_message: selectedRefInfo.value?.commit_message,
+      commit_time: selectedRefInfo.value?.commit_time,
       environment: selectedEnvironment.value,
       sub_project: proj.sub_project,
       deploy_password: deployPassword,
@@ -418,6 +628,25 @@ h1 { font-size: 1.5rem; margin: 0 0 4px; }
 .deploy-form { display: flex; flex-direction: column; gap: 20px; }
 .form-group { display: flex; flex-direction: column; gap: 6px; }
 .form-group > label { font-weight: 600; font-size: 0.9rem; }
+.project-cascader { position: relative; max-width: 640px; }
+.cascader-trigger { width: 100%; min-height: 36px; display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 8px 12px; border: 1px solid #d1d5db; border-radius: 4px; background: #fff; color: #111827; font-size: 0.95rem; text-align: left; cursor: pointer; }
+.cascader-trigger:hover:not(:disabled), .cascader-trigger-open { border-color: #2563eb; box-shadow: 0 0 0 1px rgba(37, 99, 235, 0.15); }
+.cascader-trigger:disabled { background: #f3f4f6; color: #9ca3af; cursor: not-allowed; }
+.cascader-placeholder { color: #9ca3af; }
+.cascader-arrow { color: #9ca3af; font-size: 1.2rem; transform: rotate(90deg); }
+.cascader-panel { position: absolute; top: calc(100% + 8px); left: 0; z-index: 20; display: grid; grid-template-columns: minmax(220px, 1fr); width: min(360px, calc(100vw - 32px)); max-width: 100%; border: 1px solid #e5e7eb; border-radius: 4px; background: #fff; box-shadow: 0 10px 24px rgba(15, 23, 42, 0.14); overflow: hidden; }
+.cascader-panel-expanded { grid-template-columns: minmax(180px, 1fr) minmax(180px, 1fr); width: min(720px, calc(100vw - 32px)); }
+.cascader-column { max-height: 260px; overflow-y: auto; padding: 6px 0; }
+.cascader-column + .cascader-column { border-left: 1px solid #e5e7eb; }
+.cascader-option { width: 100%; min-height: 34px; display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 7px 10px 7px 14px; border: 0; background: transparent; color: #4b5563; font-size: 0.9rem; text-align: left; cursor: pointer; }
+.cascader-option:hover, .cascader-option-active { background: #f3f4f6; color: #1d4ed8; font-weight: 600; }
+.cascader-option-content { min-width: 0; display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+.cascader-option-name { overflow-wrap: anywhere; }
+.cascader-option-tags { display: inline-flex; align-items: center; gap: 4px; flex-wrap: wrap; }
+.cascader-next { color: #9ca3af; font-size: 1.1rem; line-height: 1; }
+.label-chip { display: inline-flex; align-items: center; max-width: 100%; border: 1px solid; border-radius: 3px; padding: 1px 6px; font-size: 0.72rem; font-weight: 500; line-height: 1.35; overflow-wrap: anywhere; }
+.label-chip-project { color: #1e40af; border-color: #bfdbfe; background: #eff6ff; }
+.label-chip-subproject { color: #047857; border-color: #bbf7d0; background: #f0fdf4; }
 select { padding: 8px 12px; border: 1px solid #d1d5db; border-radius: 6px; font-size: 0.95rem; background: #fff; color: #1a1a1a; appearance: auto; }
 select:disabled { background: #f3f4f6; color: #9ca3af; cursor: not-allowed; }
 .env-options { display: flex; gap: 16px; flex-wrap: wrap; }
@@ -434,6 +663,11 @@ select:disabled { background: #f3f4f6; color: #9ca3af; cursor: not-allowed; }
 .deploy-btn:disabled { background: #93c5fd; cursor: not-allowed; }
 .hint { color: #9ca3af; font-size: 0.85rem; }
 .loading-hint { color: #6b7280; font-size: 0.85rem; }
+.last-commit-panel { border: 1px solid #e5e7eb; border-radius: 6px; background: #f9fafb; padding: 10px 12px; margin-top: 4px; }
+.last-commit-heading { color: #4b5563; font-size: 0.78rem; font-weight: 600; margin-bottom: 4px; }
+.last-commit-message { color: #111827; font-size: 0.92rem; line-height: 1.4; overflow-wrap: anywhere; white-space: pre-wrap; }
+.last-commit-meta { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; color: #6b7280; font-size: 0.8rem; margin-top: 6px; }
+.commit-sha { font-family: ui-monospace, SFMono-Regular, Consolas, 'Liberation Mono', monospace; background: #eef2ff; color: #3730a3; border-radius: 4px; padding: 2px 6px; }
 .env-links-section { margin-top: 32px; padding-top: 24px; border-top: 1px solid #e5e7eb; }
 .env-links-section h3 { font-size: 1rem; margin: 0 0 12px; font-weight: 600; }
 .env-links-grid { display: flex; flex-direction: column; gap: 10px; }
@@ -464,4 +698,8 @@ select:disabled { background: #f3f4f6; color: #9ca3af; cursor: not-allowed; }
 .modal-cancel:hover { background: #e5e7eb; }
 .modal-confirm { background: #2563eb; color: #fff; }
 .modal-confirm:hover { background: #1d4ed8; }
+@media (max-width: 720px) {
+  .cascader-panel { grid-template-columns: 1fr; }
+  .cascader-column + .cascader-column { border-left: 0; border-top: 1px solid #e5e7eb; }
+}
 </style>

@@ -266,6 +266,8 @@ func TestListProjects_Success(t *testing.T) {
 	first := data[0].(map[string]interface{})
 	assert.Equal(t, "org", first["owner"])
 	assert.Equal(t, "project-a", first["name"])
+	assert.Equal(t, "项目A", first["project_label"])
+	assert.Equal(t, "默认", first["sub_project_label"])
 }
 
 func TestListProjects_GiteaError(t *testing.T) {
@@ -288,10 +290,11 @@ func TestListProjects_GiteaError(t *testing.T) {
 }
 
 func TestListBranches_Success(t *testing.T) {
+	commitTime := time.Date(2026, 7, 21, 9, 30, 0, 0, time.UTC)
 	mock := &mockGiteaClient{
 		branches: []gitea.Branch{
 			{Name: "main", CommitID: "abc123"},
-			{Name: "develop", CommitID: "def456"},
+			{Name: "develop", CommitID: "def456", CommitMessage: "add deploy config", CommitTime: &commitTime},
 		},
 	}
 	r := setupRouter(mock, testConfig())
@@ -314,6 +317,40 @@ func TestListBranches_Success(t *testing.T) {
 	first := data[0].(map[string]interface{})
 	assert.Equal(t, "develop", first["name"])
 	assert.Equal(t, "def456", first["commit_id"])
+	assert.Equal(t, "add deploy config", first["commit_message"])
+	assert.Equal(t, "2026-07-21T09:30:00Z", first["commit_time"])
+}
+
+func TestListTags_Success(t *testing.T) {
+	commitTime := time.Date(2026, 7, 20, 18, 45, 0, 0, time.UTC)
+	mock := &mockGiteaClient{
+		tags: []gitea.Tag{
+			{Name: "v1.1.0", CommitID: "abc123"},
+			{Name: "v1.0.0", CommitID: "def456", CommitMessage: "release v1.0.0", CommitTime: &commitTime},
+		},
+	}
+	r := setupRouter(mock, testConfig())
+
+	w := httptest.NewRecorder()
+	req, _ := http.NewRequest(http.MethodGet, "/api/projects/org/my-repo/tags", nil)
+	r.ServeHTTP(w, req)
+
+	assert.Equal(t, http.StatusOK, w.Code)
+
+	var resp map[string]interface{}
+	err := json.Unmarshal(w.Body.Bytes(), &resp)
+	require.NoError(t, err)
+	assert.Equal(t, float64(0), resp["code"])
+
+	data, ok := resp["data"].([]interface{})
+	require.True(t, ok)
+	assert.Len(t, data, 2)
+
+	first := data[0].(map[string]interface{})
+	assert.Equal(t, "v1.0.0", first["name"])
+	assert.Equal(t, "def456", first["commit_id"])
+	assert.Equal(t, "release v1.0.0", first["commit_message"])
+	assert.Equal(t, "2026-07-20T18:45:00Z", first["commit_time"])
 }
 
 func TestListBranches_GiteaError(t *testing.T) {
@@ -637,17 +674,20 @@ func TestHandleDeployLogs_NotFound(t *testing.T) {
 
 func TestHandleDeployRecords_Success(t *testing.T) {
 	now := time.Now().UTC()
+	commitTime := time.Date(2026, 7, 21, 10, 15, 0, 0, time.UTC)
 	taskMgr := &mockTaskManager{
 		listRecordsFn: func(filter task.RecordFilter) ([]task.DeployRecord, int, error) {
 			records := []task.DeployRecord{
 				{
-					ID:           "uuid-1",
-					ProjectOwner: "org",
-					ProjectName:  "my-app",
-					Branch:       "main",
-					Environment:  "dev",
-					Status:       "success",
-					CreatedAt:    now,
+					ID:            "uuid-1",
+					ProjectOwner:  "org",
+					ProjectName:   "my-app",
+					Branch:        "main",
+					CommitMessage: "add history commit info",
+					CommitTime:    &commitTime,
+					Environment:   "dev",
+					Status:        "success",
+					CreatedAt:     now,
 				},
 			}
 			return records, 1, nil
@@ -675,6 +715,8 @@ func TestHandleDeployRecords_Success(t *testing.T) {
 	first := records[0].(map[string]interface{})
 	assert.Equal(t, "uuid-1", first["id"])
 	assert.Equal(t, "my-app", first["project_name"])
+	assert.Equal(t, "add history commit info", first["commit_message"])
+	assert.Equal(t, "2026-07-21T10:15:00Z", first["commit_time"])
 	assert.Equal(t, "success", first["status"])
 }
 
@@ -689,12 +731,15 @@ func TestHandleDeployRecords_WithFilters(t *testing.T) {
 	r := setupRouterWithTaskMgr(&mockGiteaClient{}, testConfig(), taskMgr)
 
 	w := httptest.NewRecorder()
-	req, _ := http.NewRequest(http.MethodGet, "/api/deploy/records?project=my-app&environment=dev&page=2&page_size=10", nil)
+	req, _ := http.NewRequest(http.MethodGet, "/api/deploy/records?project=my-app&project_keyword=app&sub_project_keyword=admin&environment=dev&status=success&page=2&page_size=10", nil)
 	r.ServeHTTP(w, req)
 
 	assert.Equal(t, http.StatusOK, w.Code)
 	assert.Equal(t, "my-app", capturedFilter.Project)
+	assert.Equal(t, "app", capturedFilter.ProjectKeyword)
+	assert.Equal(t, "admin", capturedFilter.SubProjectKeyword)
 	assert.Equal(t, "dev", capturedFilter.Environment)
+	assert.Equal(t, "success", capturedFilter.Status)
 	assert.Equal(t, 2, capturedFilter.Page)
 	assert.Equal(t, 10, capturedFilter.PageSize)
 }

@@ -8,18 +8,24 @@ export interface Project {
   name: string
   full_name: string
   label: string
+  project_label: string
   sub_project: string
+  sub_project_label: string
   clone_url: string
 }
 
 export interface Branch {
   name: string
   commit_id: string
+  commit_message: string
+  commit_time?: string
 }
 
 export interface Tag {
   name: string
   commit_id: string
+  commit_message: string
+  commit_time?: string
 }
 
 export interface Environment {
@@ -36,6 +42,8 @@ export interface DeployRequest {
   project_owner: string
   project_name: string
   branch: string
+  commit_message?: string
+  commit_time?: string
   environment: string
   sub_project: string
   deploy_password?: string
@@ -70,6 +78,8 @@ export interface DeployRecord {
   sub_project: string
   sub_project_label: string
   branch: string
+  commit_message: string
+  commit_time?: string
   environment: string
   status: string
   created_at: string
@@ -78,7 +88,10 @@ export interface DeployRecord {
 
 export interface RecordFilter {
   project?: string
+  project_keyword?: string
+  sub_project_keyword?: string
   environment?: string
+  status?: string
   page?: number
   page_size?: number
 }

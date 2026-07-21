@@ -34,12 +34,14 @@ var ErrDeploymentsInProgress = errors.New("deployments are still in progress")
 
 // DeployRequest represents a request to create a new deployment task.
 type DeployRequest struct {
-	ProjectOwner   string `json:"project_owner"`
-	ProjectName    string `json:"project_name"`
-	Branch         string `json:"branch"`
-	Environment    string `json:"environment"`
-	SubProject     string `json:"sub_project"`
-	DeployPassword string `json:"deploy_password"`
+	ProjectOwner   string     `json:"project_owner"`
+	ProjectName    string     `json:"project_name"`
+	Branch         string     `json:"branch"`
+	CommitMessage  string     `json:"commit_message"`
+	CommitTime     *time.Time `json:"commit_time"`
+	Environment    string     `json:"environment"`
+	SubProject     string     `json:"sub_project"`
+	DeployPassword string     `json:"deploy_password"`
 }
 
 // TaskStatus represents the current status of a deployment task.
@@ -63,6 +65,8 @@ type DeployRecord struct {
 	SubProject      string     `json:"sub_project"`
 	SubProjectLabel string     `json:"sub_project_label"`
 	Branch          string     `json:"branch"`
+	CommitMessage   string     `json:"commit_message"`
+	CommitTime      *time.Time `json:"commit_time,omitempty"`
 	Environment     string     `json:"environment"`
 	Status          string     `json:"status"`
 	CreatedAt       time.Time  `json:"created_at"`
@@ -71,10 +75,13 @@ type DeployRecord struct {
 
 // RecordFilter holds filtering and pagination parameters for listing deploy records.
 type RecordFilter struct {
-	Project     string `form:"project"`
-	Environment string `form:"environment"`
-	Page        int    `form:"page,default=1"`
-	PageSize    int    `form:"page_size,default=20"`
+	Project           string `form:"project"`
+	ProjectKeyword    string `form:"project_keyword"`
+	SubProjectKeyword string `form:"sub_project_keyword"`
+	Environment       string `form:"environment"`
+	Status            string `form:"status"`
+	Page              int    `form:"page,default=1"`
+	PageSize          int    `form:"page_size,default=20"`
 }
 
 // TaskManager defines the interface for managing deployment tasks.
@@ -265,18 +272,20 @@ func (m *taskManager) CreateTask(req DeployRequest) (*db.DeployTask, error) {
 
 	now := time.Now().UTC()
 	task := &db.DeployTask{
-		ID:           uuid.New().String(),
-		ProjectOwner: req.ProjectOwner,
-		ProjectName:  req.ProjectName,
-		SubProject:   req.SubProject,
-		Branch:       req.Branch,
-		Environment:  req.Environment,
-		Status:       "pending",
-		Logs:         "",
-		ErrorMessage: "",
-		CreatedAt:    now,
-		UpdatedAt:    now,
-		FinishedAt:   nil,
+		ID:            uuid.New().String(),
+		ProjectOwner:  req.ProjectOwner,
+		ProjectName:   req.ProjectName,
+		SubProject:    req.SubProject,
+		Branch:        req.Branch,
+		CommitMessage: req.CommitMessage,
+		CommitTime:    req.CommitTime,
+		Environment:   req.Environment,
+		Status:        "pending",
+		Logs:          "",
+		ErrorMessage:  "",
+		CreatedAt:     now,
+		UpdatedAt:     now,
+		FinishedAt:    nil,
 	}
 
 	m.historyMu.Lock()
@@ -592,18 +601,27 @@ func (m *taskManager) ListRecords(filter RecordFilter) ([]DeployRecord, int, err
 	dbFilter := db.RecordFilter{
 		Project:     filter.Project,
 		Environment: filter.Environment,
+		Status:      filter.Status,
 		Page:        filter.Page,
 		PageSize:    filter.PageSize,
 	}
 
-	tasks, total, err := db.ListRecords(m.database, dbFilter)
+	needsLabelFilter := strings.TrimSpace(filter.ProjectKeyword) != "" || strings.TrimSpace(filter.SubProjectKeyword) != ""
+	var tasks []db.DeployTask
+	var total int
+	var err error
+	if needsLabelFilter {
+		tasks, _, err = db.ListAllRecords(m.database, dbFilter)
+	} else {
+		tasks, total, err = db.ListRecords(m.database, dbFilter)
+	}
 	if err != nil {
 		return nil, 0, err
 	}
 
-	records := make([]DeployRecord, len(tasks))
+	records := make([]DeployRecord, 0, len(tasks))
 	cfg := m.getConfig()
-	for i, t := range tasks {
+	for _, t := range tasks {
 		projectLabel := t.ProjectName
 		subProjectLabel := t.SubProject
 		if cfg != nil {
@@ -616,7 +634,7 @@ func (m *taskManager) ListRecords(filter RecordFilter) ([]DeployRecord, int, err
 				}
 			}
 		}
-		records[i] = DeployRecord{
+		record := DeployRecord{
 			ID:              t.ID,
 			ProjectOwner:    t.ProjectOwner,
 			ProjectName:     t.ProjectName,
@@ -624,14 +642,60 @@ func (m *taskManager) ListRecords(filter RecordFilter) ([]DeployRecord, int, err
 			SubProject:      t.SubProject,
 			SubProjectLabel: subProjectLabel,
 			Branch:          t.Branch,
+			CommitMessage:   t.CommitMessage,
+			CommitTime:      t.CommitTime,
 			Environment:     t.Environment,
 			Status:          t.Status,
 			CreatedAt:       t.CreatedAt,
 			FinishedAt:      t.FinishedAt,
 		}
+		if !recordMatchesKeywords(record, filter.ProjectKeyword, filter.SubProjectKeyword) {
+			continue
+		}
+		records = append(records, record)
+	}
+
+	if needsLabelFilter {
+		total = len(records)
+		records = paginateRecords(records, filter.Page, filter.PageSize)
 	}
 
 	return records, total, nil
+}
+
+func recordMatchesKeywords(record DeployRecord, projectKeyword, subProjectKeyword string) bool {
+	projectKeyword = strings.ToLower(strings.TrimSpace(projectKeyword))
+	subProjectKeyword = strings.ToLower(strings.TrimSpace(subProjectKeyword))
+
+	if projectKeyword != "" && !containsFold(record.ProjectName, projectKeyword) && !containsFold(record.ProjectLabel, projectKeyword) {
+		return false
+	}
+	if subProjectKeyword != "" && !containsFold(record.SubProject, subProjectKeyword) && !containsFold(record.SubProjectLabel, subProjectKeyword) {
+		return false
+	}
+	return true
+}
+
+func containsFold(value, keyword string) bool {
+	return strings.Contains(strings.ToLower(value), keyword)
+}
+
+func paginateRecords(records []DeployRecord, page, pageSize int) []DeployRecord {
+	if page < 1 {
+		page = 1
+	}
+	if pageSize < 1 {
+		pageSize = 20
+	}
+	start := (page - 1) * pageSize
+	if start >= len(records) {
+		return []DeployRecord{}
+	}
+	end := start + pageSize
+	if end > len(records) {
+		end = len(records)
+	}
+	return records[start:end]
 }
 
 // ClearDeployHistory removes deployment records and their stored logs, then

@@ -118,12 +118,14 @@ func (h *Handler) handleSiteInfo(c *gin.Context) {
 // ProjectItem represents a project entry in the flattened API response.
 // Each item is a deployable unit: "project_label - sub_project_label".
 type ProjectItem struct {
-	Owner      string `json:"owner"`
-	Name       string `json:"name"`
-	FullName   string `json:"full_name"`
-	Label      string `json:"label"`
-	SubProject string `json:"sub_project"`
-	CloneURL   string `json:"clone_url"`
+	Owner           string `json:"owner"`
+	Name            string `json:"name"`
+	FullName        string `json:"full_name"`
+	Label           string `json:"label"`
+	ProjectLabel    string `json:"project_label"`
+	SubProject      string `json:"sub_project"`
+	SubProjectLabel string `json:"sub_project_label"`
+	CloneURL        string `json:"clone_url"`
 }
 
 // handleListProjects fetches all repositories from Gitea and returns a flattened list
@@ -158,12 +160,14 @@ func (h *Handler) handleListProjects(c *gin.Context) {
 				spLabel = spKey
 			}
 			items = append(items, ProjectItem{
-				Owner:      repo.Owner,
-				Name:       repo.Name,
-				FullName:   repo.FullName,
-				Label:      projLabel + " - " + spLabel,
-				SubProject: spKey,
-				CloneURL:   repo.CloneURL,
+				Owner:           repo.Owner,
+				Name:            repo.Name,
+				FullName:        repo.FullName,
+				Label:           projLabel + " - " + spLabel,
+				ProjectLabel:    projLabel,
+				SubProject:      spKey,
+				SubProjectLabel: spLabel,
+				CloneURL:        repo.CloneURL,
 			})
 		}
 	}
